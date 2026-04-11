@@ -31,8 +31,8 @@ export default function RestaurantMenu() {
     return sum + (item.price * (cart[item.id] || 0))
   }, 0)
 
-  // ФУНКЦИЯ ОТПРАВКИ (проверь её внимательно)
-  const sendOrder = () => {
+  // ФУНКЦИЯ ОТПРАВКИ (ОБНОВЛЕННАЯ ДЛЯ БАЗЫ ДАННЫХ)
+  const sendOrder = async () => {
     const selectedItems = products
       .filter(p => cart[p.id] > 0)
       .map(p => ({
@@ -42,19 +42,35 @@ export default function RestaurantMenu() {
       }));
 
     const orderData = {
-      restaurant: restaurant?.name,
+      restaurant_name: restaurant?.name,
       items: selectedItems,
-      total: totalSum
+      total_price: totalSum,
+      status: 'new',
+      user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' }
     };
 
-    // Если мы в Telegram
-    if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
-      window.Telegram.WebApp.sendData(JSON.stringify(orderData));
-    } else {
-      // Если в обычном браузере — ВЫВОДИМ ОКНО
-      alert(`ЗАКАЗ В ${restaurant?.name.toUpperCase()}:\n\n` + 
-            selectedItems.map(i => `${i.name} x${i.count}`).join('\n') + 
-            `\n\nИТОГО: ${totalSum} ₽`);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .insert([orderData])
+        .select();
+
+      if (error) throw error; // Если ошибка, переходим в catch
+
+      // Успешно отправлено
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.showPopup({
+          title: "Заказ принят!",
+          message: `Ваш заказ в ${restaurant?.name} на сумму ${totalSum} ₽ оформлен.`,
+          buttons: [{ type: "ok" }]
+        });
+        window.Telegram.WebApp.close();
+      } else {
+        alert("✅ Заказ успешно сохранен в базе данных!");
+      }
+    } catch (error) {
+      console.error('Ошибка заказа:', error.message);
+      alert('❌ Ошибка при отправке заказа: ' + error.message);
     }
   };
 
@@ -94,7 +110,7 @@ export default function RestaurantMenu() {
         {totalSum > 0 && (
           <div className="fixed bottom-6 left-0 right-0 px-4">
             <button 
-              onClick={sendOrder} // ПРОВЕРЬ, ЧТО ЭТО ТУТ ЕСТЬ
+              onClick={sendOrder}
               className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-2xl flex justify-between px-8 items-center active:scale-95 transition-all"
             >
               <span>Оформить заказ</span>
