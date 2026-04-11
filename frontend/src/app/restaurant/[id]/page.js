@@ -13,8 +13,9 @@ export default function RestaurantMenu() {
   const [products, setProducts] = useState([])
   const [cart, setCart] = useState({})
   
-  // НОВОЕ: Состояние для выбранной категории
   const [activeCategory, setActiveCategory] = useState('Все')
+  // НОВОЕ: Состояние для открытия окна корзины
+  const [isCartOpen, setIsCartOpen] = useState(false)
 
   useEffect(() => {
     async function fetchData() {
@@ -30,18 +31,34 @@ export default function RestaurantMenu() {
     setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
   }
 
+  // НОВОЕ: Функция удаления из корзины
+  const removeFromCart = (id) => {
+    setCart(prev => {
+      const currentCount = prev[id] || 0;
+      if (currentCount <= 1) {
+        const newCart = { ...prev };
+        delete newCart[id];
+        // Если корзина опустела, закрываем окно
+        if (Object.keys(newCart).length === 0) setIsCartOpen(false);
+        return newCart;
+      }
+      return { ...prev, [id]: currentCount - 1 };
+    });
+  }
+
   const totalSum = products.reduce((sum, item) => {
     return sum + (item.price * (cart[item.id] || 0))
   }, 0)
 
+  // Получаем список выбранных товаров для корзины
+  const cartItems = products.filter(p => cart[p.id] > 0);
+
   const sendOrder = async () => {
-    const selectedItems = products
-      .filter(p => cart[p.id] > 0)
-      .map(p => ({
-        name: p.name,
-        count: cart[p.id],
-        price: p.price
-      }));
+    const selectedItems = cartItems.map(p => ({
+      name: p.name,
+      count: cart[p.id],
+      price: p.price
+    }));
 
     const orderData = {
       restaurant_name: restaurant?.name,
@@ -59,6 +76,10 @@ export default function RestaurantMenu() {
 
       if (error) throw error; 
 
+      // ОЧИЩАЕМ КОРЗИНУ И ЗАКРЫВАЕМ ОКНО ПОСЛЕ ЗАКАЗА
+      setCart({});
+      setIsCartOpen(false);
+
       if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
         window.Telegram.WebApp.showPopup({
           title: "Заказ принят!",
@@ -72,6 +93,8 @@ export default function RestaurantMenu() {
     } catch (error) {
       console.error('Ошибка заказа:', error);
       if (error.message?.includes('WebAppMethodUnsupported')) {
+         setCart({});
+         setIsCartOpen(false);
          alert("✅ Заказ успешно сохранен в базе данных!");
       } else {
          alert('❌ Ошибка при отправке заказа: ' + (error.message || error));
@@ -79,10 +102,7 @@ export default function RestaurantMenu() {
     }
   };
 
-  // НОВОЕ: Получаем список уникальных категорий из товаров
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
-
-  // НОВОЕ: Фильтруем товары по выбранной категории
   const filteredProducts = activeCategory === 'Все' 
     ? products 
     : products.filter(p => (p.category || 'Основное') === activeCategory)
@@ -95,7 +115,6 @@ export default function RestaurantMenu() {
         <h1 className="text-3xl font-bold mb-2">{restaurant?.name || 'Загрузка...'}</h1>
         <p className="text-gray-500 mb-6">Выберите блюда</p>
 
-        {/* НОВОЕ: Панель категорий (Вкладки) */}
         {products.length > 0 && (
           <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
             {categories.map(cat => (
@@ -115,19 +134,27 @@ export default function RestaurantMenu() {
         )}
 
         <div className="grid gap-4">
-          {/* НОВОЕ: Выводим отфильтрованные товары, а не все подряд */}
           {filteredProducts.map((item) => (
             <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
-              <div className="flex-1">
-                <h3 className="font-bold text-lg">{item.name}</h3>
-                <p className="text-gray-400 text-sm">{item.price} ₽</p>
+              <div className="flex-1 pr-2">
+                <h3 className="font-bold text-lg leading-tight">{item.name}</h3>
+                <p className="text-gray-400 text-sm mt-1">{item.price} ₽</p>
               </div>
               
+              {/* НОВОЕ: Кнопки плюс и минус */}
               <div className="flex items-center gap-3">
                 {cart[item.id] > 0 && (
-                  <span className="font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
-                    {cart[item.id]}
-                  </span>
+                  <>
+                    <button 
+                      onClick={() => removeFromCart(item.id)}
+                      className="bg-gray-100 text-gray-600 w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all"
+                    >
+                      -
+                    </button>
+                    <span className="font-bold text-lg w-4 text-center">
+                      {cart[item.id]}
+                    </span>
+                  </>
                 )}
                 <button 
                   onClick={() => addToCart(item.id)}
@@ -144,17 +171,73 @@ export default function RestaurantMenu() {
           )}
         </div>
 
-        {totalSum > 0 && (
-          <div className="fixed bottom-6 left-0 right-0 px-4">
+        {/* НОВОЕ: Плавающая кнопка теперь открывает корзину, а не отправляет заказ */}
+        {totalSum > 0 && !isCartOpen && (
+          <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button 
-              onClick={sendOrder}
+              onClick={() => setIsCartOpen(true)}
               className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-2xl flex justify-between px-8 items-center active:scale-95 transition-all"
             >
-              <span>Оформить заказ</span>
+              <span>🛒 Посмотреть корзину</span>
               <span>{totalSum} ₽</span>
             </button>
           </div>
         )}
+
+        {/* НОВОЕ: Всплывающее окно (Модалка) Корзины */}
+        {isCartOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+            <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up max-h-[80vh] flex flex-col">
+              
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold">Корзина</h2>
+                <button 
+                  onClick={() => setIsCartOpen(false)}
+                  className="bg-gray-100 text-gray-500 w-8 h-8 rounded-full flex items-center justify-center font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="overflow-y-auto mb-6 pr-2 space-y-4">
+                {cartItems.map((item) => (
+                  <div key={item.id} className="flex justify-between items-center">
+                    <div className="flex-1">
+                      <p className="font-bold">{item.name}</p>
+                      <p className="text-gray-500 text-sm">{item.price} ₽ x {cart[item.id]}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => removeFromCart(item.id)}
+                        className="bg-gray-100 text-gray-600 w-8 h-8 rounded-lg flex items-center justify-center text-lg active:scale-90"
+                      >-</button>
+                      <span className="font-bold w-4 text-center">{cart[item.id]}</span>
+                      <button 
+                        onClick={() => addToCart(item.id)}
+                        className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg flex items-center justify-center text-lg active:scale-90"
+                      >+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-gray-100 pt-4 mb-6">
+                <div className="flex justify-between items-center text-lg font-bold">
+                  <span>Итого к оплате:</span>
+                  <span>{totalSum} ₽</span>
+                </div>
+              </div>
+
+              <button 
+                onClick={sendOrder}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all text-lg"
+              >
+                Оформить заказ
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
     </main>
   )
