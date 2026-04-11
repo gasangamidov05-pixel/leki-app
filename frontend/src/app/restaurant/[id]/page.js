@@ -31,7 +31,7 @@ export default function RestaurantMenu() {
     return sum + (item.price * (cart[item.id] || 0))
   }, 0)
 
-  // ФУНКЦИЯ ОТПРАВКИ (ОБНОВЛЕННАЯ ДЛЯ БАЗЫ ДАННЫХ)
+  // ФУНКЦИЯ ОТПРАВКИ (С УМНОЙ ПРОВЕРКОЙ ТЕЛЕГРАМА)
   const sendOrder = async () => {
     const selectedItems = products
       .filter(p => cart[p.id] > 0)
@@ -55,10 +55,10 @@ export default function RestaurantMenu() {
         .insert([orderData])
         .select();
 
-      if (error) throw error; // Если ошибка, переходим в catch
+      if (error) throw error; 
 
-      // Успешно отправлено
-      if (window.Telegram?.WebApp) {
+      // УСПЕШНО! Строгая проверка: мы точно внутри Telegram?
+      if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
         window.Telegram.WebApp.showPopup({
           title: "Заказ принят!",
           message: `Ваш заказ в ${restaurant?.name} на сумму ${totalSum} ₽ оформлен.`,
@@ -66,11 +66,18 @@ export default function RestaurantMenu() {
         });
         window.Telegram.WebApp.close();
       } else {
+        // Мы в обычном браузере
         alert("✅ Заказ успешно сохранен в базе данных!");
       }
     } catch (error) {
-      console.error('Ошибка заказа:', error.message);
-      alert('❌ Ошибка при отправке заказа: ' + error.message);
+      console.error('Ошибка заказа:', error);
+      
+      // Если браузер все равно ругается на метод Телеграма, покажем обычное окно
+      if (error.message?.includes('WebAppMethodUnsupported')) {
+         alert("✅ Заказ успешно сохранен в базе данных!");
+      } else {
+         alert('❌ Ошибка при отправке заказа: ' + (error.message || error));
+      }
     }
   };
 
