@@ -9,13 +9,33 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 # --- НАСТРОЙКИ ---
 TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
-ADMIN_ID = 5340841151 # ПРОВЕРЬ ЭТОТ ID!
+ADMIN_ID = 5340841151
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 async def get_db_conn():
     return await asyncpg.connect(DB_URL)
+
+async def get_restaurants():
+    conn = await get_db_conn()
+    rows = await conn.fetch("SELECT name, delivery_radius FROM restaurants WHERE is_active = TRUE")
+    await conn.close()
+    return rows
+
+# --- КОМАНДА /start ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    try:
+        restaurants = await get_restaurants()
+        text = "Ассаламу алейкум! Доступные заведения:\n\n" + "\n".join([f"🍽 {r['name']}" for r in restaurants])
+    except Exception:
+        text = "Ассаламу алейкум! Добро пожаловать в сервис доставки LEKI."
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))
+    ]])
+    await message.answer(text, reply_markup=kb)
 
 # --- РАДАР ЗАКАЗОВ ---
 async def order_checker():
@@ -45,7 +65,6 @@ async def order_checker():
                     f"💰 <b>{order['total_price']} ₽</b>"
                 )
 
-                # Сокращаем callback_data (лимит 64 символа!)
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="✅ Принять", callback_data=f"ok_{order['id']}_{user_tg_id}"),
                     InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user_tg_id}")
