@@ -12,6 +12,9 @@ export default function RestaurantMenu() {
   const [restaurant, setRestaurant] = useState(null)
   const [products, setProducts] = useState([])
   const [cart, setCart] = useState({})
+  
+  // НОВОЕ: Состояние для выбранной категории
+  const [activeCategory, setActiveCategory] = useState('Все')
 
   useEffect(() => {
     async function fetchData() {
@@ -31,7 +34,6 @@ export default function RestaurantMenu() {
     return sum + (item.price * (cart[item.id] || 0))
   }, 0)
 
-  // ФУНКЦИЯ ОТПРАВКИ (С УМНОЙ ПРОВЕРКОЙ ТЕЛЕГРАМА)
   const sendOrder = async () => {
     const selectedItems = products
       .filter(p => cart[p.id] > 0)
@@ -57,7 +59,6 @@ export default function RestaurantMenu() {
 
       if (error) throw error; 
 
-      // УСПЕШНО! Строгая проверка: мы точно внутри Telegram?
       if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
         window.Telegram.WebApp.showPopup({
           title: "Заказ принят!",
@@ -66,13 +67,10 @@ export default function RestaurantMenu() {
         });
         window.Telegram.WebApp.close();
       } else {
-        // Мы в обычном браузере
         alert("✅ Заказ успешно сохранен в базе данных!");
       }
     } catch (error) {
       console.error('Ошибка заказа:', error);
-      
-      // Если браузер все равно ругается на метод Телеграма, покажем обычное окно
       if (error.message?.includes('WebAppMethodUnsupported')) {
          alert("✅ Заказ успешно сохранен в базе данных!");
       } else {
@@ -81,16 +79,44 @@ export default function RestaurantMenu() {
     }
   };
 
+  // НОВОЕ: Получаем список уникальных категорий из товаров
+  const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
+
+  // НОВОЕ: Фильтруем товары по выбранной категории
+  const filteredProducts = activeCategory === 'Все' 
+    ? products 
+    : products.filter(p => (p.category || 'Основное') === activeCategory)
+
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
       <div className="max-w-md mx-auto">
         <Link href="/" className="text-blue-500 mb-4 inline-block">← Назад к списку</Link>
         
         <h1 className="text-3xl font-bold mb-2">{restaurant?.name || 'Загрузка...'}</h1>
-        <p className="text-gray-500 mb-8">Выберите блюда</p>
+        <p className="text-gray-500 mb-6">Выберите блюда</p>
+
+        {/* НОВОЕ: Панель категорий (Вкладки) */}
+        {products.length > 0 && (
+          <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setActiveCategory(cat)}
+                className={`whitespace-nowrap px-4 py-2 rounded-xl font-medium transition-all ${
+                  activeCategory === cat
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'bg-white text-gray-600 border border-gray-200'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="grid gap-4">
-          {products.map((item) => (
+          {/* НОВОЕ: Выводим отфильтрованные товары, а не все подряд */}
+          {filteredProducts.map((item) => (
             <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
               <div className="flex-1">
                 <h3 className="font-bold text-lg">{item.name}</h3>
@@ -112,6 +138,10 @@ export default function RestaurantMenu() {
               </div>
             </div>
           ))}
+          
+          {filteredProducts.length === 0 && (
+            <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>
+          )}
         </div>
 
         {totalSum > 0 && (
