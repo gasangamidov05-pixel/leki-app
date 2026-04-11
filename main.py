@@ -15,7 +15,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 async def get_db_conn():
-    return await asyncpg.connect(DB_URL)
+    return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
 async def get_restaurants():
     conn = await get_db_conn()
