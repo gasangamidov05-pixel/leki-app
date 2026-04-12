@@ -47,7 +47,6 @@ export default function RestaurantMenu() {
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
   const cartItems = products.filter(p => cart[p.id] > 0);
 
-  // ФУНКЦИЯ УМНОЙ МАСКИ
   const handlePhoneInput = (e) => {
     let input = e.target.value.replace(/\D/g, ''); 
     input = input.substring(0, 11); 
@@ -148,13 +147,34 @@ export default function RestaurantMenu() {
           ))}
         </div>
 
-        {/* Товары */}
-        <div className="grid gap-4">
+        {/* Товары с КАРТИНКАМИ */}
+        <div className="grid gap-3">
           {filteredProducts.map((item) => (
-            <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
-              <div className="flex-1 pr-2"><h3 className="font-bold text-lg leading-tight">{item.name}</h3><p className="text-gray-400 text-sm mt-1">{item.price} ₽</p></div>
-              <div className="flex items-center gap-3">
-                {cart[item.id] > 0 && (<><button onClick={() => removeFromCart(item.id)} className="bg-gray-100 text-gray-600 w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all">-</button><span className="font-bold text-lg w-4 text-center">{cart[item.id]}</span></>)}
+            <div key={item.id} className="bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+              
+              {/* БЛОК КАРТИНКИ */}
+              {item.image_url ? (
+                <div className="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-gray-100">
+                  <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="w-20 h-20 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+                  <span className="text-2xl">🍔</span>
+                </div>
+              )}
+
+              <div className="flex-1 pr-2">
+                <h3 className="font-bold text-lg leading-tight mb-1">{item.name}</h3>
+                <p className="text-gray-500 text-sm font-semibold">{item.price} ₽</p>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                {cart[item.id] > 0 && (
+                  <>
+                    <button onClick={() => removeFromCart(item.id)} className="bg-gray-100 text-gray-600 w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all">-</button>
+                    <span className="font-bold text-lg w-4 text-center">{cart[item.id]}</span>
+                  </>
+                )}
                 <button onClick={() => addToCart(item.id)} className="bg-blue-500 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all">+</button>
               </div>
             </div>
