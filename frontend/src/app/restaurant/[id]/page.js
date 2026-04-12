@@ -8,7 +8,7 @@ import Script from 'next/script'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
-// !!! ТВОЙ КЛЮЧ ЯНДЕКСА !!!
+// Твой ключ Яндекса
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197"; 
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
@@ -37,6 +37,10 @@ export default function RestaurantMenu() {
   
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
+  // НОВЫЕ ПОЛЯ: Квартира и Подъезд
+  const [apartment, setApartment] = useState('')
+  const [entrance, setEntrance] = useState('')
+
   const [deliveryPrice, setDeliveryPrice] = useState(150)
   const [isCalculating, setIsCalculating] = useState(false)
   const [isAddressValid, setIsAddressValid] = useState(false)
@@ -53,12 +57,10 @@ export default function RestaurantMenu() {
     fetchData()
   }, [params.id]);
 
-  // Следим за открытием модалки и загрузкой скрипта, чтобы создать карту
   useEffect(() => {
     if (isCheckoutOpen && isMapApiLoaded && !mapRef.current) {
       initMap();
     }
-    // Если закрыли модалку - уничтожаем карту, чтобы потом создать заново без багов
     if (!isCheckoutOpen && mapRef.current) {
       mapRef.current.map.destroy();
       mapRef.current = null;
@@ -72,7 +74,6 @@ export default function RestaurantMenu() {
     ymaps.ready(() => {
       ymapsRef.current = ymaps;
 
-      // Подсказки адресов
       const suggestView = new ymaps.SuggestView('suggest_address');
       suggestView.events.add('select', (e) => {
         const selectedAddress = e.get('item').value;
@@ -80,14 +81,12 @@ export default function RestaurantMenu() {
         geocodeAddress(selectedAddress);
       });
 
-      // Создаем карту
       const map = new ymaps.Map("map_container", {
         center: [restaurant?.lat || 42.98, restaurant?.lon || 47.50],
         zoom: 15,
         controls: ['zoomControl']
       });
 
-      // Создаем метку
       const placemark = new ymaps.Placemark(map.getCenter(), {}, {
         preset: 'islands#blueFoodIcon',
         draggable: true
@@ -95,12 +94,10 @@ export default function RestaurantMenu() {
 
       map.geoObjects.add(placemark);
 
-      // Движение метки
       placemark.events.add('dragend', () => {
         reverseGeocode(placemark.geometry.getCoordinates());
       });
 
-      // Клик по карте
       map.events.add('click', (e) => {
         const coords = e.get('coords');
         placemark.geometry.setCoordinates(coords);
@@ -145,20 +142,15 @@ export default function RestaurantMenu() {
     setIsCalculating(false);
   };
 
-  // ВЕРНУЛИ ФУНКЦИЮ GPS
   const getLocation = () => {
     setIsCalculating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const coords = [pos.coords.latitude, pos.coords.longitude];
-        
-        // Передвигаем карту к пользователю
         if (mapRef.current) {
           mapRef.current.map.setCenter(coords, 17);
           mapRef.current.placemark.geometry.setCoordinates(coords);
         }
-        
-        // Превращаем координаты в текстовый адрес
         reverseGeocode(coords);
       },
       () => {
@@ -181,6 +173,12 @@ export default function RestaurantMenu() {
   };
 
   const sendOrder = async () => {
+    // Собираем полный адрес с учетом квартиры и подъезда
+    let fullAddressStr = address;
+    if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
+    if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
+    fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
+
     const orderData = {
       restaurant_name: restaurant?.name,
       items: products.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
@@ -188,7 +186,7 @@ export default function RestaurantMenu() {
       status: 'new',
       user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
       phone,
-      address: address + `\n🚚 Доставка: ${deliveryPrice} ₽`
+      address: fullAddressStr
     };
     await supabase.from('orders').insert([orderData]);
     window.Telegram?.WebApp?.close();
@@ -198,7 +196,6 @@ export default function RestaurantMenu() {
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
-      {/* Загружаем API Яндекса сразу в фоне */}
       <Script 
         src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} 
         strategy="afterInteractive"
@@ -260,21 +257,38 @@ export default function RestaurantMenu() {
                     value={address} 
                     onChange={(e) => {setAddress(e.target.value); setIsAddressValid(false)}}
                     placeholder="Введите адрес..." 
-                    className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16"
+                    className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16 text-sm"
                   />
-                  {/* КНОПКА GPS ВЕРНУЛАСЬ СЮДА */}
                   <button onClick={getLocation} className="absolute right-2 top-2 bottom-2 bg-blue-50 text-blue-600 font-bold px-3 rounded-xl text-sm border border-blue-100">
                     📍 GPS
                   </button>
                 </div>
 
-                <div className="relative w-full h-64 rounded-3xl overflow-hidden border-2 border-gray-100">
+                <div className="relative w-full h-48 rounded-3xl overflow-hidden border-2 border-gray-100">
                   <div id="map_container" className="w-full h-full bg-gray-200 flex items-center justify-center">
-                    {!isMapApiLoaded && <span className="text-gray-400 font-bold">Загрузка карты...</span>}
+                    {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm">Загрузка карты...</span>}
                   </div>
                 </div>
 
-                <div className="bg-blue-50 p-5 rounded-3xl space-y-2">
+                {/* НОВЫЙ БЛОК: Квартира и Подъезд */}
+                <div className="flex gap-3">
+                  <input 
+                    type="text" 
+                    value={apartment} 
+                    onChange={(e) => setApartment(e.target.value)} 
+                    placeholder="Кв / Офис" 
+                    className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"
+                  />
+                  <input 
+                    type="text" 
+                    value={entrance} 
+                    onChange={(e) => setEntrance(e.target.value)} 
+                    placeholder="Подъезд" 
+                    className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"
+                  />
+                </div>
+
+                <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
                   <div className="flex justify-between text-sm font-bold text-blue-800">
                     <span>Доставка {isCalculating && '...'}:</span>
                     <span>{isAddressValid ? deliveryPrice : '--'} ₽</span>
@@ -286,12 +300,12 @@ export default function RestaurantMenu() {
                 </div>
 
                 <button 
-  onClick={sendOrder} 
-  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11} 
-  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all ${isAddressValid && phone.replace(/\D/g, '').length === 11 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
->
-  {isCalculating ? 'СЧИТАЕМ...' : 'ПОДТВЕРДИТЬ'}
-</button>
+                  onClick={sendOrder} 
+                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11} 
+                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                >
+                  {isCalculating ? 'СЧИТАЕМ...' : 'ПОДТВЕРДИТЬ'}
+                </button>
               </div>
             </div>
           </div>
