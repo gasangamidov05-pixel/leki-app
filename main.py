@@ -58,7 +58,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
-        [InlineKeyboardButton(text="🆘 Поддержка / Жалоба", url="https://t.me/твой_логин")] # ЗАМЕНИ НА СВОЙ ЛОГИН
+        [InlineKeyboardButton(text="🆘 Поддержка / Жалоба", url="https://t.me/suvanivi")] # ЗАМЕНИ НА СВОЙ ЛОГИН
     ])
     await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\n\n🛠 Админ: /admin\n🛵 Курьер: /courier", reply_markup=kb)
 
