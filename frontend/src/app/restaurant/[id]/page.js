@@ -148,12 +148,13 @@ export default function RestaurantMenu() {
     });
   };
 
-  // ИСПРАВЛЕННАЯ ЛОГИКА ДОСТАВКИ (ЛИМИТ ПО КМ)
+  // ИСПРАВЛЕННАЯ ЛОГИКА ДОСТАВКИ (ДИНАМИЧЕСКИЙ ЛИМИТ)
   const updateDeliveryPrice = (coords) => {
     if (restaurant?.lat && restaurant?.lon) {
       const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
       
-      const MAX_DISTANCE = 20; // Максимальный радиус доставки в километрах
+      // БЕРЕМ РАДИУС ИЗ БД (если вдруг там пусто, ставим 15 как запасной вариант)
+      const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
 
       if (distance > MAX_DISTANCE) {
         setDeliveryError(`Слишком далеко (${Math.round(distance)} км). Доставляем до ${MAX_DISTANCE} км.`);
