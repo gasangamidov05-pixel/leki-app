@@ -16,7 +16,6 @@ export default function RestaurantMenu() {
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isCartOpen, setIsCartOpen] = useState(false)
   
-  // Состояния для окна оформления и данных клиента
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -49,8 +48,31 @@ export default function RestaurantMenu() {
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
   const cartItems = products.filter(p => cart[p.id] > 0);
 
+  // НОВОЕ: Функция получения GPS
+  const getLocation = () => {
+    if (!navigator.geolocation) {
+      alert("К сожалению, ваш браузер не поддерживает определение локации.");
+      return;
+    }
+
+    // Просим браузер получить координаты
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        // Формируем ссылку на Яндекс Карты (pt = долгота, широта)
+        const mapLink = `https://yandex.ru/maps/?pt=${lon},${lat}&z=18&l=map`;
+        
+        // Добавляем ссылку к тексту адреса
+        setAddress(prev => prev ? `${prev}\n📍 Гео: ${mapLink}` : `📍 Гео: ${mapLink}`);
+      },
+      (error) => {
+        alert("Не удалось получить локацию. Пожалуйста, разрешите доступ к геоданным в настройках телефона/браузера.");
+      }
+    );
+  };
+
   const sendOrder = async () => {
-    // Проверка, что поля не пустые
     if (!phone || !address) {
       alert("Пожалуйста, укажите телефон и адрес доставки!");
       return;
@@ -68,8 +90,8 @@ export default function RestaurantMenu() {
       total_price: totalSum,
       status: 'new',
       user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
-      phone: phone,      // Отправляем телефон в базу
-      address: address   // Отправляем адрес в базу
+      phone: phone,      
+      address: address   
     };
 
     try {
@@ -77,7 +99,7 @@ export default function RestaurantMenu() {
       if (error) throw error; 
 
       setCart({});
-      setIsCheckoutOpen(false); // Закрываем окно оформления
+      setIsCheckoutOpen(false); 
       setPhone('');
       setAddress('');
 
@@ -166,7 +188,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Модалка Корзины */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up max-h-[80vh] flex flex-col">
@@ -207,7 +228,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Модалка Оформления заказа (Адрес и Телефон) */}
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up">
@@ -228,13 +248,22 @@ export default function RestaurantMenu() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Улица, дом, квартира</label>
-                  <input 
-                    type="text" 
+                  {/* НОВОЕ: Кнопка GPS прямо над полем ввода */}
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm font-medium text-gray-700">Город, улица, дом</label>
+                    <button 
+                      onClick={getLocation} 
+                      className="text-blue-500 text-sm font-bold flex items-center gap-1 active:scale-95 transition-transform"
+                    >
+                      📍 Отправить геопозицию
+                    </button>
+                  </div>
+                  <textarea 
+                    rows={3}
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    placeholder="ул. Пушкина, д. 10, кв. 5" 
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                    placeholder="г. Махачкала, ул. Пушкина, д. 10, кв. 5" 
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all resize-none"
                   />
                 </div>
               </div>
