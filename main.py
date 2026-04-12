@@ -73,12 +73,15 @@ async def adm_change_card(callback: CallbackQuery, state: FSMContext):
 async def process_new_card(message: types.Message, state: FSMContext):
     conn = await get_db_conn()
     try:
-        # Обновляем реквизиты в базе
-        await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2 OR $3 = $4", 
-                           message.text, message.from_user.id, message.from_user.id, MAIN_ADMIN_ID)
+        # Упростили запрос, теперь база не будет ругаться
+        await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2", 
+                           message.text, message.from_user.id)
         await message.answer("✅ Реквизиты успешно обновлены!")
         await state.clear()
         await cmd_admin(message, state) # Возвращаем в главное меню админа
+    except Exception as e:
+        print(f"Ошибка БД при обновлении карты: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.")
     finally:
         await conn.close()
 
