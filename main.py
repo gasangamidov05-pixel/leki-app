@@ -62,27 +62,27 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_p_"))
 async def admin_product_menu(callback: CallbackQuery):
-        prod_id = int(callback.data.split("_")[2])
-        conn = await get_db_conn()
-        try:
-            p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
-            if not p: return
+    prod_id = int(callback.data.split("_")[2])
+    conn = await get_db_conn()
+    try:
+        p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
+        if not p: return
 
-            is_active = p['is_active'] if p['is_active'] is not None else True
-            status_text = "🟢 В меню" if is_active else "🔴 В СТОП-ЛИСТЕ"
-            text = f"🍔 <b>{p['name']}</b>\n💰 Цена: {p['price']} ₽\n📊 Статус: <b>{status_text}</b>"
-            
-            toggle_text = "🚫 Убрать в стоп-лист" if is_active else "✅ Вернуть в меню"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💵 Изменить цену", callback_data=f"adm_price_{p['id']}")],
-                [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_toggle_{p['id']}")],
-                [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="adm_back")]
-            ])
-            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-        finally:
-            await conn.close()
-            await callback.answer()
+        is_active = p['is_active'] if p['is_active'] is not None else True
+        status_text = "🟢 В меню" if is_active else "🔴 В СТОП-ЛИСТЕ"
+        text = f"🍔 <b>{p['name']}</b>\n💰 Цена: {p['price']} ₽\n📊 Статус: <b>{status_text}</b>"
+        
+        toggle_text = "🚫 Убрать в стоп-лист" if is_active else "✅ Вернуть в меню"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💵 Изменить цену", callback_data=f"adm_price_{p['id']}")],
+            [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_toggle_{p['id']}")],
+            [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="adm_back")]
+        ])
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    finally:
+        await conn.close()
+        await callback.answer()
 
 @dp.callback_query(F.data == "adm_back")
 async def admin_back(callback: CallbackQuery, state: FSMContext):
@@ -151,11 +151,9 @@ async def order_checker():
                 items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
 
-                # --- НОВАЯ ЛОГИКА РАСЧЕТА СУММ ---
-                # 1. Считаем стоимость чисто за еду
+                # --- ЛОГИКА РАСЧЕТА СУММ ---
                 food_total = sum(i['price'] * i['count'] for i in items)
                 
-                # 2. Отрезаем доставку от адреса
                 raw_address = order.get('address', 'Не указан')
                 if "\n🚚" in raw_address:
                     address_part, delivery_part = raw_address.split("\n🚚", 1)
@@ -169,8 +167,7 @@ async def order_checker():
 
                 text = (
                     f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
-                    f"🏠 Заведение: <b>{order['restaurant_name']}</b>\n"
-                    f"🆔 ID админа: <code>{target_id}</code>\n\n" 
+                    f"🏠 Заведение: <b>{order['restaurant_name']}</b>\n\n" 
                     f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
                     f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
                     f"📍 Адрес: {address_part}\n\n"
@@ -187,7 +184,7 @@ async def order_checker():
 
                 try:
                     await bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
-                    await conn.execute("UPDATE orders SET status = 'processing' WHERE id = $1", order['id'])
+                    # УДАЛЕНО: автоматическое обновление статуса на 'processing'
                 except Exception as send_err:
                     print(f"Ошибка отправки админу: {send_err}")
 
