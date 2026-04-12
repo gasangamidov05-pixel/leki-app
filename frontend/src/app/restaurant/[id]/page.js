@@ -183,7 +183,7 @@ export default function RestaurantMenu() {
     setPhone(formatted);
   };
 
-  // ОБНОВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ (С ФОТО ЧЕКА)
+  // ОБНОВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ (С ВЫВОДОМ ОШИБОК)
   const sendOrder = async () => {
     if (!receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
@@ -220,11 +220,17 @@ export default function RestaurantMenu() {
         receipt_url: publicUrl // Ссылка на фото чека
       };
 
-      await supabase.from('orders').insert([orderData]);
+      // Проверяем ошибку при записи в БД!
+      const { error: insertError } = await supabase.from('orders').insert([orderData]);
+      if (insertError) {
+        alert("Ошибка сохранения в базу: " + insertError.message);
+        setIsUploading(false);
+        return; // Останавливаем выполнение, не закрываем окно
+      }
+
       window.Telegram?.WebApp?.close();
     } catch (err) {
       alert("Ошибка при отправке: " + err.message);
-    } finally {
       setIsUploading(false);
     }
   };
