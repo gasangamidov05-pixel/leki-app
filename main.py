@@ -82,12 +82,34 @@ async def admin_add_courier(message: types.Message):
 async def admin_del_courier(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     args = message.text.split()
-    if len(args) < 2: return
+    
+    if len(args) < 2: 
+        return await message.answer("⚠️ Ошибка! Напишите команду в формате: /del_courier [ID]")
+    
     conn = await get_db_conn()
     try:
-        await conn.execute("DELETE FROM couriers WHERE tg_id = $1", int(args[1]))
-        await message.answer("🚫 Курьер удален.")
-    finally: await conn.close()
+        c_id = int(args[1])
+        
+        # 1. Отвязываем курьера от истории заказов (чтобы не сломать архив ресторана)
+        await conn.execute("UPDATE orders SET courier_tg_id = NULL WHERE courier_tg_id = $1", c_id)
+        
+        # 2. Удаляем его оценки (иначе база не даст удалить курьера)
+        await conn.execute("DELETE FROM courier_reviews WHERE courier_tg_id = $1", c_id)
+        
+        # 3. Теперь база разрешит удалить самого курьера
+        deleted = await conn.execute("DELETE FROM couriers WHERE tg_id = $1", c_id)
+        
+        if deleted == "DELETE 0":
+            await message.answer(f"⚠️ Курьер с ID <code>{c_id}</code> не найден в базе.", parse_mode="HTML")
+        else:
+            await message.answer(f"🚫 Курьер с ID <code>{c_id}</code> полностью удален и лишен доступа.", parse_mode="HTML")
+            
+    except ValueError:
+        await message.answer("❌ ID должен состоять только из цифр!")
+    except Exception as e:
+        await message.answer(f"❌ Системная ошибка: {e}")
+    finally: 
+        await conn.close()
 
 @dp.message(Command("courier_stats"))
 async def courier_stats(message: types.Message):
