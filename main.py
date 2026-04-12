@@ -21,7 +21,6 @@ class AdminStates(StatesGroup):
     waiting_for_card = State()
     waiting_for_radius = State()
     prod_id = State()
-    # Новые для добавления блюд
     waiting_for_new_name = State()
     waiting_for_new_price = State()
     waiting_for_new_desc = State()
@@ -57,14 +56,17 @@ async def notify_client(conn, order_id, status_msg):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
+        [InlineKeyboardButton(text="🆘 Поддержка / Жалоба", url="https://t.me/твой_логин")] # ЗАМЕНИ НА СВОЙ ЛОГИН
+    ])
     await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\n\n🛠 Админ: /admin\n🛵 Курьер: /courier", reply_markup=kb)
 
 @dp.message(Command("my_id"))
 async def cmd_my_id(message: types.Message):
     await message.answer(f"Ваш ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
 
-# --- УПРАВЛЕНИЕ КУРЬЕРАМИ ---
+# --- УПРАВЛЕНИЕ КУРЬЕРАМИ (SUPER) ---
 @dp.message(Command("add_courier"))
 async def admin_add_courier(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
@@ -76,8 +78,39 @@ async def admin_add_courier(message: types.Message):
         await message.answer(f"✅ Курьер {args[2]} добавлен!")
     finally: await conn.close()
 
+@dp.message(Command("del_courier"))
+async def admin_del_courier(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    if len(args) < 2: return
+    conn = await get_db_conn()
+    try:
+        await conn.execute("DELETE FROM couriers WHERE tg_id = $1", int(args[1]))
+        await message.answer("🚫 Курьер удален.")
+    finally: await conn.close()
+
+@dp.message(Command("courier_stats"))
+async def courier_stats(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    conn = await get_db_conn()
+    try:
+        rows = await conn.fetch("""
+            SELECT c.name, c.tg_id, ROUND(AVG(r.rating), 1) as rating, COUNT(r.id) as jobs
+            FROM couriers c
+            LEFT JOIN courier_reviews r ON c.tg_id = r.courier_tg_id
+            GROUP BY c.tg_id, c.name
+            ORDER BY rating DESC NULLS LAST
+        """)
+        text = "📊 <b>Рейтинг курьеров:</b>\n\n"
+        for r in rows:
+            rate = r['rating'] or 0
+            star = "⭐" if rate >= 4.5 else "⚠️" if rate < 3.5 and r['jobs'] > 0 else "🔸"
+            text += f"{star} <b>{r['name']}</b>: {rate} ({r['jobs']} зак.)\nID: <code>{r['tg_id']}</code>\n"
+        await message.answer(text + "\nУдалить: /del_courier ID", parse_mode="HTML")
+    finally: await conn.close()
+
 # ==========================================
-#           ПАНЕЛЬ КУРЬЕРА (FIXED)
+#           ПАНЕЛЬ КУРЬЕРА
 # ==========================================
 async def get_courier_panel_text(conn, tg_id):
     c = await conn.fetchrow("SELECT * FROM couriers WHERE tg_id = $1", tg_id)
@@ -98,14 +131,13 @@ async def cmd_courier(message: types.Message, state: FSMContext):
         text, kb = await get_courier_panel_text(conn, message.from_user.id)
         if not text:
             apply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📝 Стать курьером", url="https://t.me/ТВОЙ_БОТ_ДЛЯ_ЗАЯВОК")]])
-            return await message.answer("❌ <b>Доступ запрещен.</b>\n\nХотите работать в <b>LEKI</b>? Нажмите кнопку ниже!", reply_markup=apply_kb, parse_mode="HTML")
+            return await message.answer("❌ Доступ запрещен. Хотите работать в LEKI?", reply_markup=apply_kb)
         
         c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
         if c['city'] == '-':
             await message.answer("Напишите ваш город для работы:")
             await state.set_state(CourierStates.change_city)
-        else:
-            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else: await message.answer(text, reply_markup=kb, parse_mode="HTML")
     finally: await conn.close()
 
 @dp.callback_query(F.data == "cour_toggle")
@@ -129,6 +161,7 @@ async def cour_save_city(message: types.Message, state: FSMContext):
     finally: await conn.close()
 
 # --- ЛОГИКА ЦЕПОЧКИ ЗАКАЗА ---
+
 @dp.callback_query(F.data.startswith("take_"))
 async def take_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
@@ -175,33 +208,45 @@ async def done_order(callback: CallbackQuery):
         await conn.execute("UPDATE orders SET status = 'completed' WHERE id = $1", order_id)
         await notify_restaurant(conn, order_id, "Заказ успешно доставлен! ✅")
         
-        # Предлагаем клиенту оценить заказ
+        # Первая оценка: РЕСТОРАНУ
         order_data = await conn.fetchrow("SELECT user_data, restaurant_name FROM orders WHERE id = $1", order_id)
         if order_data:
             res = await conn.fetchrow("SELECT id FROM restaurants WHERE name = $1", order_data['restaurant_name'])
             u = json.loads(order_data['user_data'])
-            kb_rate = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="1 ⭐", callback_data=f"rate_{order_id}_{res['id']}_1"),
-                InlineKeyboardButton(text="2 ⭐", callback_data=f"rate_{order_id}_{res['id']}_2"),
-                InlineKeyboardButton(text="3 ⭐", callback_data=f"rate_{order_id}_{res['id']}_3"),
-                InlineKeyboardButton(text="4 ⭐", callback_data=f"rate_{order_id}_{res['id']}_4"),
-                InlineKeyboardButton(text="5 ⭐", callback_data=f"rate_{order_id}_{res['id']}_5")
+            kb_res = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rres_{order_id}_{res['id']}_{i}") for i in range(1, 6)
             ]])
-            try: await bot.send_message(u['id'], f"🛎 Заказ №{order_id} доставлен! Пожалуйста, оцените работу ресторана и курьера:", reply_markup=kb_rate)
+            try: await bot.send_message(u['id'], f"😋 <b>Оцените блюда от {order_data['restaurant_name']}:</b>", reply_markup=kb_res, parse_mode="HTML")
             except: pass
             
         await callback.message.edit_text(f"🏁 <b>Заказ №{order_id} завершен!</b>")
     finally: await conn.close(); await callback.answer()
 
-# --- ЛОГИКА РЕЙТИНГА ---
-@dp.callback_query(F.data.startswith("rate_"))
-async def rate_handler(callback: CallbackQuery):
+# --- ЛОГИКА РАЗДЕЛЬНОГО РЕЙТИНГА ---
+
+@dp.callback_query(F.data.startswith("rres_"))
+async def handle_rate_res(callback: CallbackQuery):
     _, order_id, res_id, stars = callback.data.split("_")
     conn = await get_db_conn()
     try:
-        await conn.execute("INSERT INTO reviews (restaurant_id, order_id, rating) VALUES ($1, $2, $3)", int(res_id), int(order_id), int(stars))
-        await callback.message.edit_text(f"🙏 Спасибо за оценку ({stars}⭐)! Это помогает нам стать лучше.")
-    except: await callback.answer("Вы уже оценивали этот заказ!")
+        await conn.execute("INSERT INTO restaurant_reviews (restaurant_id, order_id, rating) VALUES ($1, $2, $3)", int(res_id), int(order_id), int(stars))
+        # Переходим ко второй оценке: КУРЬЕРУ
+        order = await conn.fetchrow("SELECT courier_tg_id FROM orders WHERE id = $1", int(order_id))
+        kb_cour = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rcour_{order_id}_{order['courier_tg_id']}_{i}") for i in range(1, 6)
+        ]])
+        await callback.message.edit_text(f"✅ Оценка еды сохранена!\n\n🛵 <b>А как вам работа курьера?</b>", reply_markup=kb_cour, parse_mode="HTML")
+    except: await callback.answer("Уже оценено!")
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("rcour_"))
+async def handle_rate_cour(callback: CallbackQuery):
+    _, order_id, courier_id, stars = callback.data.split("_")
+    conn = await get_db_conn()
+    try:
+        await conn.execute("INSERT INTO courier_reviews (courier_tg_id, order_id, rating) VALUES ($1, $2, $3)", int(courier_id), int(order_id), int(stars))
+        await callback.message.edit_text("🙏 Спасибо! Это помогает нам становиться лучше.")
+    except: await callback.answer("Уже оценено!")
     finally: await conn.close()
 
 # ==========================================
@@ -224,42 +269,39 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
 
-# --- ДОБАВЛЕНИЕ НОВОГО БЛЮДА ---
 @dp.callback_query(F.data.startswith("adm_add_new_"))
 async def adm_start_add(callback: CallbackQuery, state: FSMContext):
     res_id = int(callback.data.split("_")[3])
     await state.update_data(res_id=res_id)
     await state.set_state(AdminStates.waiting_for_new_name)
-    await callback.message.answer("Введите <b>Название</b> нового блюда:", parse_mode="HTML")
+    await callback.message.answer("Название блюда:")
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_new_name)
-async def adm_add_name(message: types.Message, state: FSMContext):
+async def adm_new_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Введите <b>Цену</b> (только цифры):", parse_mode="HTML")
+    await message.answer("Цена (цифрами):")
     await state.set_state(AdminStates.waiting_for_new_price)
 
 @dp.message(AdminStates.waiting_for_new_price)
-async def adm_add_price(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("Ошибка! Введите число.")
+async def adm_new_price(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Введите число!")
     await state.update_data(price=int(message.text))
-    await message.answer("Введите <b>Описание</b> блюда (или отправьте '-', если описание не нужно):", parse_mode="HTML")
+    await message.answer("Описание (или '-' если не нужно):")
     await state.set_state(AdminStates.waiting_for_new_desc)
 
 @dp.message(AdminStates.waiting_for_new_desc)
-async def adm_add_desc(message: types.Message, state: FSMContext):
+async def adm_new_desc(message: types.Message, state: FSMContext):
     data = await state.get_data()
     desc = "" if message.text == "-" else message.text
     conn = await get_db_conn()
     try:
-        await conn.execute("INSERT INTO products (restaurant_id, name, price, description, is_active) VALUES ($1, $2, $3, $4, true)",
-                           data['res_id'], data['name'], data['price'], desc)
-        await message.answer(f"✅ Блюдо <b>{data['name']}</b> успешно добавлено!", parse_mode="HTML")
+        await conn.execute("INSERT INTO products (restaurant_id, name, price, description, is_active) VALUES ($1, $2, $3, $4, true)", data['res_id'], data['name'], data['price'], desc)
+        await message.answer(f"✅ Блюдо {data['name']} добавлено!")
         await state.clear()
         await cmd_admin(message, state)
     finally: await conn.close()
 
-# --- УПРАВЛЕНИЕ СУЩЕСТВУЮЩИМ МЕНЮ ---
 @dp.callback_query(F.data.startswith("adm_menu_"))
 async def adm_show_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
@@ -268,14 +310,10 @@ async def adm_show_menu(callback: CallbackQuery):
         products = await conn.fetch("SELECT id, name, is_active FROM products WHERE restaurant_id = $1 ORDER BY id DESC", res_id)
         kb = [[InlineKeyboardButton(text="➕ ДОБАВИТЬ НОВОЕ БЛЮДО", callback_data=f"adm_add_new_{res_id}")]]
         for p in products:
-            status = "✅" if p['is_active'] else "🚫"
-            kb.append([InlineKeyboardButton(text=f"{status} {p['name']}", callback_data=f"adm_p_{p['id']}")])
+            kb.append([InlineKeyboardButton(text=f"{'✅' if p['is_active'] else '🚫'} {p['name']}", callback_data=f"adm_p_{p['id']}")])
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
         await callback.message.edit_text("Меню ресторана:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     finally: await conn.close(); await callback.answer()
-
-# (Здесь остаются функции: admin_product_menu, admin_toggle, admin_price, adm_change_card, process_card, process_radius - я их включил в логику выше)
-# Для краткости: они идентичны твоим, но адаптированы под общую структуру
 
 @dp.callback_query(F.data.startswith("adm_p_"))
 async def admin_product_menu(callback: CallbackQuery):
@@ -283,10 +321,9 @@ async def admin_product_menu(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
-        is_active = p['is_active'] if p['is_active'] is not None else True
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💵 Изменить цену", callback_data=f"adm_price_{p['id']}")],
-            [InlineKeyboardButton(text="🚫 В Стоп-лист" if is_active else "✅ В Меню", callback_data=f"adm_toggle_{p['id']}")],
+            [InlineKeyboardButton(text="🚫 В Стоп-лист" if p['is_active'] else "✅ В Меню", callback_data=f"adm_toggle_{p['id']}")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data=f"adm_menu_{p['restaurant_id']}")]
         ])
         await callback.message.edit_text(f"🍔 {p['name']}\nЦена: {p['price']} ₽\nОписание: {p['description'] or '-'}", reply_markup=kb)
@@ -321,6 +358,39 @@ async def process_price(message: types.Message, state: FSMContext):
         await cmd_admin(message, state)
     finally: await conn.close()
 
+@dp.callback_query(F.data.startswith("adm_card_"))
+async def adm_card(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_card)
+    await callback.message.answer("Введите новые реквизиты:")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_card)
+async def process_card(message: types.Message, state: FSMContext):
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await message.answer("✅ Реквизиты обновлены!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_radius_"))
+async def adm_radius(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_radius)
+    await callback.message.answer("Введите радиус доставки (число):")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_radius)
+async def process_radius(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET delivery_radius = $1 WHERE admin_tg_id = $2", int(message.text), message.from_user.id)
+        await message.answer("✅ Радиус обновлен!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
 @dp.callback_query(F.data == "adm_cancel")
 async def admin_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -342,7 +412,7 @@ async def order_checker():
                 user = json.loads(order['user_data'])
                 items = json.loads(order['items'])
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
-                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {res_info['city'] if res_info else '-'}\n👤 {user.get('first_name')}\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>")
+                text = (f"🚨 <b>НОВЫЙ ОПЛАЧЕННЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {res_info['city'] if res_info else '-'}\n👤 {user.get('first_name')}\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>")
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="✅ Принять (Оплачено)", callback_data=f"ok_{order['id']}_{user.get('id')}"),
                     InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user.get('id')}")
