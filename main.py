@@ -135,7 +135,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
         await conn.close()
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ (ИСПРАВЛЕННЫЙ)
+#           РАДАР ЗАКАЗОВ (ОБНОВЛЕННЫЙ)
 # ==========================================
 async def order_checker():
     print("🚀 Радар запущен. Ищу новые заказы...")
@@ -148,6 +148,10 @@ async def order_checker():
             
             for order in new_orders:
                 try:
+                    # ПОЛУЧАЕМ ГОРОД ИЗ ТАБЛИЦЫ РЕСТОРАНОВ
+                    res_info = await conn.fetchrow("SELECT city FROM restaurants WHERE name ILIKE $1", order['restaurant_name'])
+                    city_name = res_info['city'] if res_info else "Не указан"
+
                     user = json.loads(order['user_data']) if isinstance(order['user_data'], str) else order['user_data']
                     user_tg_id = user.get('id', 0)
                     items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
@@ -168,6 +172,7 @@ async def order_checker():
 
                     text = (
                         f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+                        f"🏙 Город: <b>{city_name}</b>\n" # ТЕПЕРЬ С ГОРОДОМ
                         f"🏠 Заведение: <b>{order['restaurant_name']}</b>\n\n" 
                         f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
                         f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
@@ -188,7 +193,7 @@ async def order_checker():
                     
                     # СРАЗУ помечаем в базе, что уведомили
                     await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
-                    print(f"✅ Заказ #{order['id']} обработан.")
+                    print(f"✅ Заказ #{order['id']} ({city_name}) обработан.")
 
                 except Exception as order_err:
                     print(f"❌ Ошибка в цикле заказа: {order_err}")
