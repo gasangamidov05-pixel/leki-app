@@ -135,7 +135,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
         await conn.close()
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ 
+#           РАДАР ЗАКАЗОВ (БЕЗ СПАМА)
 # ==========================================
 async def order_checker():
     print("Радар запущен и проверяет заказы...")
@@ -143,7 +143,8 @@ async def order_checker():
         conn = None
         try:
             conn = await get_db_conn()
-            new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' LIMIT 5")
+            # Ищем новые заказы (status='new'), которые мы еще НЕ отправляли (is_notified=false)
+            new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             
             for order in new_orders:
                 user = json.loads(order['user_data']) if isinstance(order['user_data'], str) else order['user_data']
@@ -151,9 +152,10 @@ async def order_checker():
                 items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
 
-                # --- ЛОГИКА РАСЧЕТА СУММ ---
+                # Расчет суммы за еду
                 food_total = sum(i['price'] * i['count'] for i in items)
                 
+                # Обработка адреса и выделение строки доставки
                 raw_address = order.get('address', 'Не указан')
                 if "\n🚚" in raw_address:
                     address_part, delivery_part = raw_address.split("\n🚚", 1)
@@ -184,12 +186,13 @@ async def order_checker():
 
                 try:
                     await bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
-                    # УДАЛЕНО: автоматическое обновление статуса на 'processing'
+                    # Помечаем, что уведомили, но статус оставляем 'new'
+                    await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
                 except Exception as send_err:
                     print(f"Ошибка отправки админу: {send_err}")
 
         except Exception as e:
-            pass 
+            print(f"Ошибка радара: {e}")
         finally:
             if conn: await conn.close()
         
