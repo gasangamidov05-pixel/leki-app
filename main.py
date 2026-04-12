@@ -39,20 +39,14 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     await state.clear()
     conn = await get_db_conn()
     try:
-        # Ищем ресторан, к которому привязан этот админ
         res = await conn.fetchrow("SELECT id, name FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
-        
-        # Если не найден, но пишет главный босс (ты) - даем первый ресторан для управления
         if not res and message.from_user.id == MAIN_ADMIN_ID:
             res = await conn.fetchrow("SELECT id, name FROM restaurants LIMIT 1")
-            
         if not res:
             await message.answer("❌ У вас нет прав администратора или привязанного заведения.")
             return
 
         res_id, res_name = res['id'], res['name']
-        
-        # Достаем все товары этого ресторана
         products = await conn.fetch("SELECT id, name, is_active FROM products WHERE restaurant_id = $1 ORDER BY id", res_id)
         
         kb = []
@@ -68,27 +62,27 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_p_"))
 async def admin_product_menu(callback: CallbackQuery):
-    prod_id = int(callback.data.split("_")[2])
-    conn = await get_db_conn()
-    try:
-        p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
-        if not p: return
+        prod_id = int(callback.data.split("_")[2])
+        conn = await get_db_conn()
+        try:
+            p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
+            if not p: return
 
-        is_active = p['is_active'] if p['is_active'] is not None else True
-        status_text = "🟢 В меню" if is_active else "🔴 В СТОП-ЛИСТЕ"
-        text = f"🍔 <b>{p['name']}</b>\n💰 Цена: {p['price']} ₽\n📊 Статус: <b>{status_text}</b>"
-        
-        toggle_text = "🚫 Убрать в стоп-лист" if is_active else "✅ Вернуть в меню"
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Изменить цену", callback_data=f"adm_price_{p['id']}")],
-            [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_toggle_{p['id']}")],
-            [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="adm_back")]
-        ])
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    finally:
-        await conn.close()
-        await callback.answer()
+            is_active = p['is_active'] if p['is_active'] is not None else True
+            status_text = "🟢 В меню" if is_active else "🔴 В СТОП-ЛИСТЕ"
+            text = f"🍔 <b>{p['name']}</b>\n💰 Цена: {p['price']} ₽\n📊 Статус: <b>{status_text}</b>"
+            
+            toggle_text = "🚫 Убрать в стоп-лист" if is_active else "✅ Вернуть в меню"
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💵 Изменить цену", callback_data=f"adm_price_{p['id']}")],
+                [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_toggle_{p['id']}")],
+                [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="adm_back")]
+            ])
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        finally:
+            await conn.close()
+            await callback.answer()
 
 @dp.callback_query(F.data == "adm_back")
 async def admin_back(callback: CallbackQuery, state: FSMContext):
@@ -100,7 +94,6 @@ async def admin_toggle(callback: CallbackQuery):
     prod_id = int(callback.data.split("_")[2])
     conn = await get_db_conn()
     try:
-        # Меняем статус на противоположный
         await conn.execute("UPDATE products SET is_active = NOT COALESCE(is_active, TRUE) WHERE id = $1", prod_id)
         await admin_product_menu(callback) 
     finally:
@@ -142,7 +135,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
         await conn.close()
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ (ОСТАЛСЯ ПРЕЖНИМ)
+#           РАДАР ЗАКАЗОВ 
 # ==========================================
 async def order_checker():
     print("Радар запущен и проверяет заказы...")
@@ -158,6 +151,19 @@ async def order_checker():
                 items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
 
+                # --- НОВАЯ ЛОГИКА РАСЧЕТА СУММ ---
+                # 1. Считаем стоимость чисто за еду
+                food_total = sum(i['price'] * i['count'] for i in items)
+                
+                # 2. Отрезаем доставку от адреса
+                raw_address = order.get('address', 'Не указан')
+                if "\n🚚" in raw_address:
+                    address_part, delivery_part = raw_address.split("\n🚚", 1)
+                    delivery_str = f"🚚 {delivery_part.strip()}"
+                else:
+                    address_part = raw_address
+                    delivery_str = ""
+
                 res_admin = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name ILIKE $1", order['restaurant_name'])
                 target_id = res_admin['admin_tg_id'] if res_admin and res_admin['admin_tg_id'] else MAIN_ADMIN_ID
 
@@ -167,8 +173,10 @@ async def order_checker():
                     f"🆔 ID админа: <code>{target_id}</code>\n\n" 
                     f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
                     f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
-                    f"📍 Адрес: {order.get('address', 'Не указан')}\n\n"
+                    f"📍 Адрес: {address_part}\n\n"
                     f"{items_text}\n"
+                    f"{delivery_str}\n"
+                    f"🍔 Заказ: {food_total} ₽\n"
                     f"💰 <b>ИТОГО: {order['total_price']} ₽</b>"
                 )
 
