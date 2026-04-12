@@ -48,33 +48,33 @@ export default function RestaurantMenu() {
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
   const cartItems = products.filter(p => cart[p.id] > 0);
 
+  // НОВОЕ: Функция получения GPS
   const getLocation = () => {
     if (!navigator.geolocation) {
-      alert("Ваш браузер не поддерживает определение локации.");
+      alert("К сожалению, ваш браузер не поддерживает определение локации.");
       return;
     }
+
+    // Просим браузер получить координаты
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lon = position.coords.longitude;
+        // Формируем ссылку на Яндекс Карты (pt = долгота, широта)
         const mapLink = `https://yandex.ru/maps/?pt=${lon},${lat}&z=18&l=map`;
+        
+        // Добавляем ссылку к тексту адреса
         setAddress(prev => prev ? `${prev}\n📍 Гео: ${mapLink}` : `📍 Гео: ${mapLink}`);
       },
       (error) => {
-        alert("Не удалось получить геоданные. Возможно, доступ запрещен в настройках.");
+        alert("Не удалось получить локацию. Пожалуйста, разрешите доступ к геоданным в настройках телефона/браузера.");
       }
     );
   };
 
   const sendOrder = async () => {
-    const cleanPhone = phone.replace(/\D/g, ''); 
-    if (cleanPhone.length !== 11) {
-      alert("❌ Ошибка: Введите полный номер телефона (11 цифр)!");
-      return;
-    }
-
-    if (!address.trim()) {
-      alert("❌ Ошибка: Пожалуйста, укажите адрес доставки!");
+    if (!phone || !address) {
+      alert("Пожалуйста, укажите телефон и адрес доставки!");
       return;
     }
 
@@ -95,7 +95,7 @@ export default function RestaurantMenu() {
     };
 
     try {
-      const { error } = await supabase.from('orders').insert([orderData]).select();
+      const { data, error } = await supabase.from('orders').insert([orderData]).select();
       if (error) throw error; 
 
       setCart({});
@@ -125,41 +125,6 @@ export default function RestaurantMenu() {
          alert('❌ Ошибка при отправке заказа: ' + (error.message || error));
       }
     }
-  };
-
-  // НОВОЕ: Умная маска для телефона
-  const handlePhoneInput = (e) => {
-    // Оставляем только цифры
-    let input = e.target.value.replace(/\D/g, '');
-    
-    if (!input) {
-      setPhone('');
-      return;
-    }
-
-    // Жестко обрезаем до 11 цифр
-    input = input.substring(0, 11);
-
-    // Если начинается с 9, подставляем 7 (для России)
-    if (input[0] === '9') input = '7' + input;
-
-    let formatted = '';
-    
-    if (['7', '8'].includes(input[0])) {
-      // Форматируем под РФ: +7 (XXX) XXX-XX-XX
-      let firstSymbol = (input[0] === '8') ? '8' : '+7';
-      formatted = firstSymbol + ' ';
-      
-      if (input.length > 1) formatted += '(' + input.substring(1, 4);
-      if (input.length >= 5) formatted += ') ' + input.substring(4, 7);
-      if (input.length >= 8) formatted += '-' + input.substring(7, 9);
-      if (input.length >= 10) formatted += '-' + input.substring(9, 11);
-    } else {
-      // Если другой код страны — просто ставим плюс и до 11 цифр
-      formatted = '+' + input;
-    }
-
-    setPhone(formatted);
   };
 
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
@@ -208,7 +173,10 @@ export default function RestaurantMenu() {
               </div>
             </div>
           ))}
-          {filteredProducts.length === 0 && <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>}
+          
+          {filteredProducts.length === 0 && (
+            <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>
+          )}
         </div>
 
         {totalSum > 0 && !isCartOpen && !isCheckoutOpen && (
@@ -242,12 +210,14 @@ export default function RestaurantMenu() {
                   </div>
                 ))}
               </div>
+              
               <div className="border-t border-gray-100 pt-4 mb-6">
                 <div className="flex justify-between items-center text-lg font-bold">
                   <span>Итого к оплате:</span>
                   <span>{totalSum} ₽</span>
                 </div>
               </div>
+
               <button 
                 onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all text-lg"
@@ -272,42 +242,28 @@ export default function RestaurantMenu() {
                   <input 
                     type="tel" 
                     value={phone}
-                    onChange={handlePhoneInput}
+                    onChange={(e) => setPhone(e.target.value)}
                     placeholder="+7 (999) 000-00-00" 
-                    maxLength={18} // Дополнительная страховка
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
                   />
                 </div>
-
                 <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="block text-sm font-medium text-gray-700">Куда везти?</label>
+                  {/* НОВОЕ: Кнопка GPS прямо над полем ввода */}
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm font-medium text-gray-700">Город, улица, дом</label>
                     <button 
                       onClick={getLocation} 
                       className="text-blue-500 text-sm font-bold flex items-center gap-1 active:scale-95 transition-transform"
                     >
-                      📍 Поделиться геометкой
+                      📍 Отправить геопозицию
                     </button>
                   </div>
-                  
-                  <div className="flex gap-2 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
-                    {['Махачкала', 'Каспийск', 'Дербент'].map(city => (
-                      <button 
-                        key={city}
-                        onClick={() => setAddress(city + ", " + address)}
-                        className="bg-blue-50 text-blue-600 px-3 py-1 rounded-lg text-sm font-semibold whitespace-nowrap active:scale-95 transition-all"
-                      >
-                        + {city}
-                      </button>
-                    ))}
-                  </div>
-
                   <textarea 
                     rows={3}
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    placeholder="Улица, дом, подъезд..." 
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all resize-none"
+                    placeholder="г. Махачкала, ул. Пушкина, д. 10, кв. 5" 
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all resize-none"
                   />
                 </div>
               </div>
