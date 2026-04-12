@@ -44,6 +44,7 @@ export default function RestaurantMenu() {
   const [isUploading, setIsUploading] = useState(false)
 
   const [deliveryPrice, setDeliveryPrice] = useState(150)
+  const [deliveryError, setDeliveryError] = useState('') // НОВОЕ СОСТОЯНИЕ ДЛЯ ОШИБКИ
   const [isCalculating, setIsCalculating] = useState(false)
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
@@ -147,11 +148,22 @@ export default function RestaurantMenu() {
     });
   };
 
+  // ИСПРАВЛЕННАЯ ЛОГИКА ДОСТАВКИ (ЛИМИТ ПО КМ)
   const updateDeliveryPrice = (coords) => {
     if (restaurant?.lat && restaurant?.lon) {
       const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
-      setDeliveryPrice(Math.round(150 + (distance * 22)));
-      setIsAddressValid(true);
+      
+      const MAX_DISTANCE = 20; // Максимальный радиус доставки в километрах
+
+      if (distance > MAX_DISTANCE) {
+        setDeliveryError(`Слишком далеко (${Math.round(distance)} км). Доставляем до ${MAX_DISTANCE} км.`);
+        setDeliveryPrice(0);
+        setIsAddressValid(false);
+      } else {
+        setDeliveryError(''); // Очищаем ошибку
+        setDeliveryPrice(Math.round(150 + (distance * 22)));
+        setIsAddressValid(true);
+      }
     }
     setIsCalculating(false);
   };
@@ -183,13 +195,11 @@ export default function RestaurantMenu() {
     setPhone(formatted);
   };
 
-  // ОБНОВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ 
   const sendOrder = async () => {
     if (!receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
     setIsUploading(true);
     try {
-      // 1. Грузим чек в Storage
       const fileExt = receiptFile.name.split('.').pop();
       const fileName = `${Math.random()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
@@ -202,13 +212,11 @@ export default function RestaurantMenu() {
         .from('receipts')
         .getPublicUrl(fileName);
 
-      // 2. Формируем адрес
       let fullAddressStr = address;
       if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
 
-      // 3. Сохраняем заказ в БД
       const orderData = {
         restaurant_name: restaurant?.name,
         items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
@@ -217,7 +225,7 @@ export default function RestaurantMenu() {
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
         address: fullAddressStr,
-        receipt_url: publicUrl // Ссылка на фото чека
+        receipt_url: publicUrl
       };
 
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
@@ -234,7 +242,6 @@ export default function RestaurantMenu() {
     }
   };
 
-  // ФУНКЦИИ ИСТОРИИ ЗАКАЗОВ
   const openMyOrders = async () => {
     setIsOrdersOpen(true);
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -264,7 +271,6 @@ export default function RestaurantMenu() {
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
 
       <div className="max-w-md mx-auto">
-        {/* ШАПКА И КНОПКА ИСТОРИИ */}
         <div className="flex justify-between items-center mb-6">
           <Link href="/" className="text-blue-500 font-bold">← Назад</Link>
           <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all">
@@ -274,14 +280,12 @@ export default function RestaurantMenu() {
 
         <h1 className="text-3xl font-black mb-4">{restaurant?.name || 'Загрузка...'}</h1>
 
-        {/* КАТЕГОРИИ */}
         <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
           {categories.map(cat => (
             <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border-2 border-gray-100 text-gray-600'}`}>{cat}</button>
           ))}
         </div>
 
-        {/* СПИСОК ТОВАРОВ */}
         <div className="grid gap-3">
           {filteredProducts.map((item) => (
             <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false && 'opacity-50 grayscale'}`}>
@@ -305,7 +309,6 @@ export default function RestaurantMenu() {
           ))}
         </div>
 
-        {/* КНОПКА КОРЗИНЫ */}
         {totalSum > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
@@ -314,7 +317,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* МОДАЛКА КОРЗИНЫ */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto animate-slide-up">
@@ -337,7 +339,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* МОДАЛКА ОФОРМЛЕНИЯ */}
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto animate-slide-up pb-10 max-h-[90vh] overflow-y-auto">
@@ -365,7 +366,6 @@ export default function RestaurantMenu() {
                   <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
 
-                {/* НОВЫЙ БЛОК ОПЛАТЫ */}
                 <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
                   <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
                   <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
@@ -384,8 +384,15 @@ export default function RestaurantMenu() {
                 </div>
 
                 <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
-                  <div className="flex justify-between text-sm font-bold text-blue-800"><span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span></div>
-                  <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900"><span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span></div>
+                  {/* ВЫВОДИМ ОШИБКУ, ЕСЛИ ДАЛЕКО */}
+                  {deliveryError ? (
+                    <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-sm font-bold text-blue-800"><span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span></div>
+                      <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900"><span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span></div>
+                    </>
+                  )}
                 </div>
 
                 <button 
@@ -400,7 +407,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
         {isOrdersOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col">
