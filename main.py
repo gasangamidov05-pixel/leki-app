@@ -15,10 +15,11 @@ MAIN_ADMIN_ID = 5340841151 # Твой основной ID
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Добавили состояние для ожидания реквизитов карты
+# Состояния для админки
 class AdminStates(StatesGroup):
     waiting_for_price = State()
     waiting_for_card = State()
+    waiting_for_radius = State() # <-- Состояние для радиуса
     prod_id = State()
 
 async def get_db_conn():
@@ -40,20 +41,20 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     await state.clear()
     conn = await get_db_conn()
     try:
-        # Теперь запрашиваем еще и card_number
-        res = await conn.fetchrow("SELECT id, name, card_number FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
+        res = await conn.fetchrow("SELECT id, name, card_number, delivery_radius FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
         if not res and message.from_user.id == MAIN_ADMIN_ID:
-            res = await conn.fetchrow("SELECT id, name, card_number FROM restaurants LIMIT 1")
+            res = await conn.fetchrow("SELECT id, name, card_number, delivery_radius FROM restaurants LIMIT 1")
         if not res:
             await message.answer("❌ У вас нет прав администратора или привязанного заведения.")
             return
 
         res_id, res_name, card_number = res['id'], res['name'], res['card_number']
+        radius = res['delivery_radius'] or 15 
         
-        # Обновленное меню админа: выбор между меню блюд и реквизитами
         kb = [
             [InlineKeyboardButton(text="🗺 Управление меню (Стоп-лист/Цены)", callback_data=f"adm_menu_{res_id}")],
             [InlineKeyboardButton(text="💳 Мои реквизиты", callback_data=f"adm_card_{res_id}")],
+            [InlineKeyboardButton(text=f"📍 Радиус доставки: {radius} км", callback_data=f"adm_radius_{res_id}")],
         ]
         
         text = f"🛠 <b>Панель управления: {res_name}</b>\n\nТекущие реквизиты для оплаты:\n<code>{card_number or 'Не указаны'}</code>\n\nВыберите действие:"
@@ -73,19 +74,46 @@ async def adm_change_card(callback: CallbackQuery, state: FSMContext):
 async def process_new_card(message: types.Message, state: FSMContext):
     conn = await get_db_conn()
     try:
-        # Упростили запрос, теперь база не будет ругаться
         await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2", 
                            message.text, message.from_user.id)
         await message.answer("✅ Реквизиты успешно обновлены!")
         await state.clear()
-        await cmd_admin(message, state) # Возвращаем в главное меню админа
+        await cmd_admin(message, state) 
     except Exception as e:
         print(f"Ошибка БД при обновлении карты: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте еще раз.")
     finally:
         await conn.close()
 
-# --- ЛОГИКА УПРАВЛЕНИЯ МЕНЮ (Старая добрая) ---
+# --- ЛОГИКА ИЗМЕНЕНИЯ РАДИУСА (НОВАЯ) ---
+@dp.callback_query(F.data.startswith("adm_radius_"))
+async def adm_change_radius(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_radius)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]])
+    await callback.message.edit_text("Отправьте максимальный радиус доставки в километрах (просто число, например: 10):", reply_markup=kb)
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_radius)
+async def process_new_radius(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ Пожалуйста, отправьте только число (например: 15).")
+        return
+
+    new_radius = int(message.text)
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET delivery_radius = $1 WHERE admin_tg_id = $2", 
+                           new_radius, message.from_user.id)
+        await message.answer(f"✅ Радиус доставки успешно изменен на {new_radius} км!")
+        await state.clear()
+        await cmd_admin(message, state)
+    except Exception as e:
+        print(f"Ошибка БД при обновлении радиуса: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.")
+    finally:
+        await conn.close()
+
+# --- ЛОГИКА УПРАВЛЕНИЯ МЕНЮ ---
 @dp.callback_query(F.data.startswith("adm_menu_"))
 async def adm_show_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
@@ -164,7 +192,6 @@ async def process_new_price(message: types.Message, state: FSMContext):
         await message.answer(f"✅ Цена успешно обновлена на {new_price} ₽!")
         await state.clear()
         
-        # Возвращаем в меню ресторана
         p = await conn.fetchrow("SELECT restaurant_id FROM products WHERE id = $1", prod_id)
         class DummyCallback:
             def __init__(self, msg, data):
@@ -184,7 +211,7 @@ async def admin_cancel(callback: CallbackQuery, state: FSMContext):
 
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ (С ФОТО ЧЕКА)
+#           РАДАР ЗАКАЗОВ
 # ==========================================
 async def order_checker():
     print("🚀 Радар запущен. Ищу новые заказы...")
@@ -235,11 +262,15 @@ async def order_checker():
                         InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user_tg_id}")
                     ]])
 
-                    # ПРОБУЕМ ОТПРАВИТЬ ФОТО ЧЕКА, ЕСЛИ ОНО ЕСТЬ
                     receipt_url = order.get('receipt_url')
                     
                     if receipt_url:
-                        await bot.send_photo(chat_id=target_id, photo=receipt_url, caption=text, parse_mode="HTML", reply_markup=kb)
+                        try:
+                            await bot.send_photo(chat_id=target_id, photo=receipt_url, caption=text, parse_mode="HTML", reply_markup=kb)
+                        except Exception as photo_err:
+                            print(f"Телеграм не принял фото, шлем текстом: {photo_err}")
+                            text_with_link = text + f"\n\n📎 <a href='{receipt_url}'><b>ОТКРЫТЬ ЧЕК</b></a>"
+                            await bot.send_message(chat_id=target_id, text=text_with_link, parse_mode="HTML", reply_markup=kb)
                     else:
                         await bot.send_message(chat_id=target_id, text=text, parse_mode="HTML", reply_markup=kb)
                     
@@ -268,7 +299,6 @@ async def handle_buttons(callback: CallbackQuery):
             if client_id:
                 await bot.send_message(client_id, f"🎉 <b>Отличные новости!</b>\nВаш заказ <b>№{order_id}</b> успешно оплачен и принят заведением. Приятного аппетита!", parse_mode="HTML")
             
-            # Меняем подпись (оставляем фото на месте, меняем текст внизу)
             new_caption = callback.message.caption + "\n\n🟢 СТАТУС: ПРИНЯТ И ОПЛАЧЕН" if callback.message.caption else callback.message.text + "\n\n🟢 СТАТУС: ПРИНЯТ И ОПЛАЧЕН"
             
             if callback.message.photo:
