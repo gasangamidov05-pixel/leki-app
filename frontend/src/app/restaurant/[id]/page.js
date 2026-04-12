@@ -7,19 +7,14 @@ import { useParams } from 'next/navigation'
 import Script from 'next/script'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
-
-// Твой ключ Яндекса
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197"; 
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
   const dLon = (lon2 - lon1) * (Math.PI / 180);
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 export default function RestaurantMenu() {
@@ -31,22 +26,25 @@ export default function RestaurantMenu() {
   const [products, setProducts] = useState([])
   const [cart, setCart] = useState({})
   
+  // ВЕРНУЛИ КАТЕГОРИИ И ИСТОРИЮ
   const [activeCategory, setActiveCategory] = useState('Все')
+  const [isOrdersOpen, setIsOrdersOpen] = useState(false)
+  const [myOrders, setMyOrders] = useState([])
+
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
-  // НОВЫЕ ПОЛЯ: Квартира и Подъезд
   const [apartment, setApartment] = useState('')
   const [entrance, setEntrance] = useState('')
 
   const [deliveryPrice, setDeliveryPrice] = useState(150)
   const [isCalculating, setIsCalculating] = useState(false)
   const [isAddressValid, setIsAddressValid] = useState(false)
-  
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
+  // Загрузка данных
   useEffect(() => {
     async function fetchData() {
       const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
@@ -57,10 +55,32 @@ export default function RestaurantMenu() {
     fetchData()
   }, [params.id]);
 
+  // ВЕРНУЛИ РАДАР СТАТУСОВ ДЛЯ ИСТОРИИ ЗАКАЗОВ
   useEffect(() => {
-    if (isCheckoutOpen && isMapApiLoaded && !mapRef.current) {
-      initMap();
-    }
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    const channel = supabase
+      .channel('public:orders')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+        const updatedOrder = payload.new;
+        const uData = typeof updatedOrder.user_data === 'string' ? JSON.parse(updatedOrder.user_data) : updatedOrder.user_data;
+        
+        if ((tgUser && uData?.id === tgUser.id) || !tgUser) {
+          setMyOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
+          let statusText = "обновлен 🔄";
+          if (updatedOrder.status === 'accepted') statusText = "принят и начал готовиться! 🔥";
+          if (updatedOrder.status === 'cancelled') statusText = "отменен заведением ❌";
+          if (window.Telegram?.WebApp?.initData) {
+            window.Telegram.WebApp.showPopup({ title: `Заказ #${updatedOrder.id}`, message: `Статус: ${statusText}`, buttons: [{ type: "ok" }] });
+          }
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel) };
+  }, []);
+
+  // Карта Яндекса
+  useEffect(() => {
+    if (isCheckoutOpen && isMapApiLoaded && !mapRef.current) initMap();
     if (!isCheckoutOpen && mapRef.current) {
       mapRef.current.map.destroy();
       mapRef.current = null;
@@ -70,10 +90,8 @@ export default function RestaurantMenu() {
   const initMap = () => {
     const ymaps = window.ymaps;
     if (!ymaps) return;
-
     ymaps.ready(() => {
       ymapsRef.current = ymaps;
-
       const suggestView = new ymaps.SuggestView('suggest_address');
       suggestView.events.add('select', (e) => {
         const selectedAddress = e.get('item').value;
@@ -87,17 +105,10 @@ export default function RestaurantMenu() {
         controls: ['zoomControl']
       });
 
-      const placemark = new ymaps.Placemark(map.getCenter(), {}, {
-        preset: 'islands#blueFoodIcon',
-        draggable: true
-      });
-
+      const placemark = new ymaps.Placemark(map.getCenter(), {}, { preset: 'islands#blueFoodIcon', draggable: true });
       map.geoObjects.add(placemark);
 
-      placemark.events.add('dragend', () => {
-        reverseGeocode(placemark.geometry.getCoordinates());
-      });
-
+      placemark.events.add('dragend', () => reverseGeocode(placemark.geometry.getCoordinates()));
       map.events.add('click', (e) => {
         const coords = e.get('coords');
         placemark.geometry.setCoordinates(coords);
@@ -126,8 +137,7 @@ export default function RestaurantMenu() {
     ymapsRef.current.geocode(coords).then((res) => {
       const firstGeoObject = res.geoObjects.get(0);
       if (firstGeoObject) {
-        const addr = firstGeoObject.getAddressLine();
-        setAddress(addr);
+        setAddress(firstGeoObject.getAddressLine());
         updateDeliveryPrice(coords);
       }
     });
@@ -153,10 +163,7 @@ export default function RestaurantMenu() {
         }
         reverseGeocode(coords);
       },
-      () => {
-        alert("Включите GPS в настройках телефона!");
-        setIsCalculating(false);
-      }
+      () => { alert("Включите GPS в настройках телефона!"); setIsCalculating(false); }
     );
   };
 
@@ -173,7 +180,6 @@ export default function RestaurantMenu() {
   };
 
   const sendOrder = async () => {
-    // Собираем полный адрес с учетом квартиры и подъезда
     let fullAddressStr = address;
     if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
     if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
@@ -181,7 +187,7 @@ export default function RestaurantMenu() {
 
     const orderData = {
       restaurant_name: restaurant?.name,
-      items: products.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
+      items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
       total_price: totalSum + deliveryPrice,
       status: 'new',
       user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
@@ -192,76 +198,124 @@ export default function RestaurantMenu() {
     window.Telegram?.WebApp?.close();
   };
 
+  // ФУНКЦИИ ИСТОРИИ ЗАКАЗОВ
+  const openMyOrders = async () => {
+    setIsOrdersOpen(true);
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    try {
+      const { data } = await supabase.from('orders').select('*').order('id', { ascending: false }).limit(20);
+      setMyOrders(data.filter(o => {
+        if (!tgUser?.id) return true;
+        const uData = typeof o.user_data === 'string' ? JSON.parse(o.user_data) : o.user_data;
+        return uData?.id === tgUser.id;
+      }).slice(0, 5));
+    } catch (err) {}
+  };
+
+  const getStatusBadge = (status) => {
+    if (status === 'new') return <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-xl text-xs font-black uppercase">🕒 Ожидает</span>;
+    if (status === 'processing' || status === 'accepted') return <span className="bg-green-100 text-green-700 px-3 py-1 rounded-xl text-xs font-black uppercase">🔥 Готовится</span>;
+    if (status === 'cancelled') return <span className="bg-red-100 text-red-700 px-3 py-1 rounded-xl text-xs font-black uppercase">❌ Отменен</span>;
+    return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase">{status}</span>;
+  };
+
+  const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
+  const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0);
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
-      <Script 
-        src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} 
-        strategy="afterInteractive"
-        onLoad={() => setIsMapApiLoaded(true)}
-      />
+      <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
 
       <div className="max-w-md mx-auto">
+        {/* ШАПКА И КНОПКА ИСТОРИИ */}
         <div className="flex justify-between items-center mb-6">
           <Link href="/" className="text-blue-500 font-bold">← Назад</Link>
-          <h1 className="text-2xl font-black">{restaurant?.name || 'Загрузка...'}</h1>
+          <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all">
+            📜 Мои заказы
+          </button>
         </div>
 
+        <h1 className="text-3xl font-black mb-4">{restaurant?.name || 'Загрузка...'}</h1>
+
+        {/* КАТЕГОРИИ */}
+        <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+          {categories.map(cat => (
+            <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border-2 border-gray-100 text-gray-600'}`}>{cat}</button>
+          ))}
+        </div>
+
+        {/* СПИСОК ТОВАРОВ */}
         <div className="grid gap-3">
-          {products.map((item) => (
-            <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm flex items-center gap-4 ${item.is_active === false && 'opacity-50 grayscale'}`}>
-              <div className="w-16 h-16 rounded-xl bg-gray-100 overflow-hidden shrink-0">
+          {filteredProducts.map((item) => (
+            <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false && 'opacity-50 grayscale'}`}>
+              <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
                 <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
               </div>
               <div className="flex-1">
-                <h3 className="font-bold text-sm">{item.name}</h3>
+                <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
                 <p className="text-blue-600 font-black">{item.price} ₽</p>
               </div>
               <div className="flex items-center gap-2">
                 {item.is_active !== false ? (
                   <>
-                    {cart[item.id] > 0 && <button onClick={() => {const c={...cart}; c[item.id]--; setCart(c)}} className="bg-gray-100 w-8 h-8 rounded-lg">-</button>}
-                    {cart[item.id] > 0 && <span className="font-bold">{cart[item.id]}</span>}
-                    <button onClick={() => setCart({...cart, [item.id]: (cart[item.id]||0)+1})} className="bg-blue-500 text-white w-8 h-8 rounded-lg">+</button>
+                    {cart[item.id] > 0 && <button onClick={() => {const c={...cart}; c[item.id]--; setCart(c)}} className="bg-gray-100 text-gray-600 w-9 h-9 rounded-xl font-bold">-</button>}
+                    {cart[item.id] > 0 && <span className="font-bold w-4 text-center">{cart[item.id]}</span>}
+                    <button onClick={() => setCart({...cart, [item.id]: (cart[item.id]||0)+1})} className="bg-blue-500 text-white w-9 h-9 rounded-xl font-bold shadow-sm">+</button>
                   </>
-                ) : <span className="text-xs text-red-500 font-bold">Стоп</span>}
+                ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
               </div>
             </div>
           ))}
         </div>
 
-        {totalSum > 0 && (
-          <div className="fixed bottom-6 left-0 right-0 px-4">
-            <button onClick={() => setIsCartOpen(true)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold flex justify-between px-8 shadow-xl">
+        {/* КНОПКА КОРЗИНЫ */}
+        {totalSum > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && (
+          <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
+            <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
               <span>🛒 Корзина</span><span>{totalSum} ₽</span>
             </button>
           </div>
         )}
 
+        {/* МОДАЛКА КОРЗИНЫ */}
+        {isCartOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto animate-slide-up">
+              <div className="flex justify-between items-center mb-6">
+                 <h2 className="text-2xl font-black">Ваш заказ</h2>
+                 <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
+              </div>
+              <div className="space-y-4 mb-8 max-h-[40vh] overflow-y-auto">
+                {products.filter(p => cart[p.id] > 0).map(p => (
+                  <div key={p.id} className="flex justify-between items-center border-b border-gray-50 pb-3">
+                    <span className="font-bold">{p.name} <span className="text-gray-400 text-sm ml-1">x{cart[p.id]}</span></span>
+                    <span className="font-black text-blue-600">{p.price * cart[p.id]} ₽</span>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
+                К оформлению
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* МОДАЛКА ОФОРМЛЕНИЯ */}
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 w-full animate-slide-up pb-10 max-h-[90vh] overflow-y-auto">
+            <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto animate-slide-up pb-10 max-h-[90vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-black">Доставка</h2>
-                <button onClick={() => setIsCheckoutOpen(false)} className="text-gray-400 font-bold text-xl">✕</button>
+                <button onClick={() => setIsCheckoutOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
               </div>
 
               <div className="space-y-4">
                 <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
                 
                 <div className="relative">
-                  <input 
-                    id="suggest_address"
-                    type="text" 
-                    value={address} 
-                    onChange={(e) => {setAddress(e.target.value); setIsAddressValid(false)}}
-                    placeholder="Введите адрес..." 
-                    className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16 text-sm"
-                  />
-                  <button onClick={getLocation} className="absolute right-2 top-2 bottom-2 bg-blue-50 text-blue-600 font-bold px-3 rounded-xl text-sm border border-blue-100">
-                    📍 GPS
-                  </button>
+                  <input id="suggest_address" type="text" value={address} onChange={(e) => {setAddress(e.target.value); setIsAddressValid(false)}} placeholder="Введите адрес..." className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16 text-sm"/>
+                  <button onClick={getLocation} className="absolute right-2 top-2 bottom-2 bg-blue-50 text-blue-600 font-bold px-3 rounded-xl text-sm border border-blue-100">📍 GPS</button>
                 </div>
 
                 <div className="relative w-full h-48 rounded-3xl overflow-hidden border-2 border-gray-100">
@@ -270,40 +324,17 @@ export default function RestaurantMenu() {
                   </div>
                 </div>
 
-                {/* НОВЫЙ БЛОК: Квартира и Подъезд */}
                 <div className="flex gap-3">
-                  <input 
-                    type="text" 
-                    value={apartment} 
-                    onChange={(e) => setApartment(e.target.value)} 
-                    placeholder="Кв / Офис" 
-                    className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"
-                  />
-                  <input 
-                    type="text" 
-                    value={entrance} 
-                    onChange={(e) => setEntrance(e.target.value)} 
-                    placeholder="Подъезд" 
-                    className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"
-                  />
+                  <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                  <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
 
                 <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
-                  <div className="flex justify-between text-sm font-bold text-blue-800">
-                    <span>Доставка {isCalculating && '...'}:</span>
-                    <span>{isAddressValid ? deliveryPrice : '--'} ₽</span>
-                  </div>
-                  <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
-                    <span>Итого:</span>
-                    <span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span>
-                  </div>
+                  <div className="flex justify-between text-sm font-bold text-blue-800"><span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span></div>
+                  <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900"><span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span></div>
                 </div>
 
-                <button 
-                  onClick={sendOrder} 
-                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11} 
-                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-                >
+                <button onClick={sendOrder} disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11} className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
                   {isCalculating ? 'СЧИТАЕМ...' : 'ПОДТВЕРДИТЬ'}
                 </button>
               </div>
@@ -311,24 +342,32 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {isCartOpen && (
+        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
+        {isOrdersOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-8 w-full">
+            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col">
               <div className="flex justify-between items-center mb-6">
-                 <h2 className="text-2xl font-black">Ваш заказ</h2>
-                 <button onClick={() => setIsCartOpen(false)} className="text-gray-400 font-bold text-xl">✕</button>
+                <h2 className="text-2xl font-black">Мои заказы</h2>
+                <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
               </div>
-              <div className="space-y-4 mb-8">
-                {products.filter(p => cart[p.id] > 0).map(p => (
-                  <div key={p.id} className="flex justify-between font-bold">
-                    <span>{p.name} <span className="text-gray-400 ml-1">x{cart[p.id]}</span></span>
-                    <span>{p.price * cart[p.id]} ₽</span>
-                  </div>
-                ))}
+              <div className="overflow-y-auto space-y-4 pr-2 pb-6">
+                {myOrders.length === 0 ? (
+                  <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
+                ) : (
+                  myOrders.map(o => {
+                    const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
+                    return (
+                      <div key={o.id} className="border-2 border-gray-100 rounded-3xl p-5 shadow-sm bg-white">
+                        <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
+                        <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-blue-100 pl-3">
+                          {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
+                        </div>
+                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
+                      </div>
+                    )
+                  })
+                )}
               </div>
-              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl">
-                Перейти к оформлению
-              </button>
             </div>
           </div>
         )}
