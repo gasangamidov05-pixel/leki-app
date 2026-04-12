@@ -135,64 +135,66 @@ async def process_new_price(message: types.Message, state: FSMContext):
         await conn.close()
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ (БЕЗ СПАМА)
+#           РАДАР ЗАКАЗОВ (ИСПРАВЛЕННЫЙ)
 # ==========================================
 async def order_checker():
-    print("Радар запущен и проверяет заказы...")
+    print("🚀 Радар запущен. Ищу новые заказы...")
     while True:
         conn = None
         try:
             conn = await get_db_conn()
-            # Ищем новые заказы (status='new'), которые мы еще НЕ отправляли (is_notified=false)
+            # Проверяем только те, что не были уведомлены
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             
             for order in new_orders:
-                user = json.loads(order['user_data']) if isinstance(order['user_data'], str) else order['user_data']
-                user_tg_id = user.get('id', 0)
-                items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
-                items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
-
-                # Расчет суммы за еду
-                food_total = sum(i['price'] * i['count'] for i in items)
-                
-                # Обработка адреса и выделение строки доставки
-                raw_address = order.get('address', 'Не указан')
-                if "\n🚚" in raw_address:
-                    address_part, delivery_part = raw_address.split("\n🚚", 1)
-                    delivery_str = f"🚚 {delivery_part.strip()}"
-                else:
-                    address_part = raw_address
-                    delivery_str = ""
-
-                res_admin = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name ILIKE $1", order['restaurant_name'])
-                target_id = res_admin['admin_tg_id'] if res_admin and res_admin['admin_tg_id'] else MAIN_ADMIN_ID
-
-                text = (
-                    f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
-                    f"🏠 Заведение: <b>{order['restaurant_name']}</b>\n\n" 
-                    f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
-                    f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
-                    f"📍 Адрес: {address_part}\n\n"
-                    f"{items_text}\n"
-                    f"{delivery_str}\n"
-                    f"🍔 Заказ: {food_total} ₽\n"
-                    f"💰 <b>ИТОГО: {order['total_price']} ₽</b>"
-                )
-
-                kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="✅ Принять", callback_data=f"ok_{order['id']}_{user_tg_id}"),
-                    InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user_tg_id}")
-                ]])
-
                 try:
+                    user = json.loads(order['user_data']) if isinstance(order['user_data'], str) else order['user_data']
+                    user_tg_id = user.get('id', 0)
+                    items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
+                    
+                    items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
+                    food_total = sum(i['price'] * i['count'] for i in items)
+                    
+                    raw_address = order.get('address', 'Не указан')
+                    if "\n🚚" in raw_address:
+                        address_part, delivery_part = raw_address.split("\n🚚", 1)
+                        delivery_str = f"🚚 {delivery_part.strip()}"
+                    else:
+                        address_part = raw_address
+                        delivery_str = ""
+
+                    res_admin = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name ILIKE $1", order['restaurant_name'])
+                    target_id = res_admin['admin_tg_id'] if res_admin and res_admin['admin_tg_id'] else MAIN_ADMIN_ID
+
+                    text = (
+                        f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+                        f"🏠 Заведение: <b>{order['restaurant_name']}</b>\n\n" 
+                        f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
+                        f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
+                        f"📍 Адрес: {address_part}\n\n"
+                        f"{items_text}\n"
+                        f"{delivery_str}\n"
+                        f"🍔 Заказ: {food_total} ₽\n"
+                        f"💰 <b>ИТОГО: {order['total_price']} ₽</b>"
+                    )
+
+                    kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ Принять", callback_data=f"ok_{order['id']}_{user_tg_id}"),
+                        InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user_tg_id}")
+                    ]])
+
+                    # Отправляем сообщение
                     await bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
-                    # Помечаем, что уведомили, но статус оставляем 'new'
+                    
+                    # СРАЗУ помечаем в базе, что уведомили
                     await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
-                except Exception as send_err:
-                    print(f"Ошибка отправки админу: {send_err}")
+                    print(f"✅ Заказ #{order['id']} обработан.")
+
+                except Exception as order_err:
+                    print(f"❌ Ошибка в цикле заказа: {order_err}")
 
         except Exception as e:
-            print(f"Ошибка радара: {e}")
+            print(f"📡 Ошибка радара: {e}")
         finally:
             if conn: await conn.close()
         
