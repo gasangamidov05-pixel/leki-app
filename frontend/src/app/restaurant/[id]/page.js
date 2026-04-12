@@ -7,6 +7,18 @@ import { useParams } from 'next/navigation'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
+// Математическая функция для расчета расстояния в километрах по GPS
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Радиус Земли в км
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 export default function RestaurantMenu() {
   const params = useParams()
   const [restaurant, setRestaurant] = useState(null)
@@ -22,7 +34,9 @@ export default function RestaurantMenu() {
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
 
-  // ЗАГРУЗКА ДАННЫХ
+  // НОВОЕ: Состояние для цены доставки (базовая 150)
+  const [deliveryPrice, setDeliveryPrice] = useState(150)
+
   useEffect(() => {
     async function fetchData() {
       const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
@@ -33,46 +47,31 @@ export default function RestaurantMenu() {
     fetchData()
   }, [params.id])
 
-  // НОВОЕ: МАГИЯ REAL-TIME (СЛУШАЕМ БАЗУ ДАННЫХ)
   useEffect(() => {
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
-
     const channel = supabase
       .channel('public:orders')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
         const updatedOrder = payload.new;
-        
-        // Проверяем, чей это заказ
         const uData = typeof updatedOrder.user_data === 'string' ? JSON.parse(updatedOrder.user_data) : updatedOrder.user_data;
         
-        // Если заказ принадлежит текущему клиенту
         if ((tgUser && uData?.id === tgUser.id) || !tgUser) {
-          
-          // 1. Обновляем статус в списке (если открыто окно)
           setMyOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-
-          // 2. Показываем красивое всплывающее окно
           let statusText = "обновлен 🔄";
           if (updatedOrder.status === 'accepted') statusText = "принят и начал готовиться! 🔥";
           if (updatedOrder.status === 'cancelled') statusText = "отменен заведением ❌";
 
           if (window.Telegram?.WebApp?.initData) {
-            window.Telegram.WebApp.showPopup({
-              title: `Заказ #${updatedOrder.id}`,
-              message: `Статус: ${statusText}`,
-              buttons: [{ type: "ok" }]
-            });
+            window.Telegram.WebApp.showPopup({ title: `Заказ #${updatedOrder.id}`, message: `Статус: ${statusText}`, buttons: [{ type: "ok" }] });
           } else {
-            alert(`Заказ #${updatedOrder.id} ${statusText}`);
+            // alert(`Заказ #${updatedOrder.id} ${statusText}`);
           }
         }
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel) };
   }, []);
 
-  // КОРЗИНА И ОФОРМЛЕНИЕ
   const addToCart = (id) => setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
 
   const removeFromCart = (id) => {
@@ -114,8 +113,16 @@ export default function RestaurantMenu() {
       (pos) => {
         const link = `https://yandex.ru/maps/?pt=${pos.coords.longitude},${pos.coords.latitude}&z=18&l=map`;
         setAddress(prev => prev ? `${prev}\n📍 Гео: ${link}` : `📍 Гео: ${link}`);
+
+        // НОВОЕ: Расчет доставки если у ресторана есть координаты
+        if (restaurant?.lat && restaurant?.lon) {
+          const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, pos.coords.latitude, pos.coords.longitude);
+          // Формула: Фикс 150 + (каждый км * 22)
+          const calculatedPrice = 150 + (distance * 22);
+          setDeliveryPrice(Math.round(calculatedPrice));
+        }
       },
-      () => alert("Ошибка доступа к GPS. Включите геопозицию в настройках браузера.")
+      () => alert("Ошибка доступа к GPS. Включите геопозицию в настройках.")
     );
   };
 
@@ -124,20 +131,23 @@ export default function RestaurantMenu() {
     if (cleanPhone.length !== 11) { alert("❌ Ошибка: Номер телефона должен состоять из 11 цифр!"); return; }
     if (!address.trim()) { alert("❌ Ошибка: Укажите адрес доставки!"); return; }
 
+    const finalTotalPrice = totalSum + deliveryPrice;
+    const finalAddressInfo = address + `\n🚚 Рассчитанная доставка: ${deliveryPrice} ₽`;
+
     const orderData = {
       restaurant_name: restaurant?.name,
       items: cartItems.map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
-      total_price: totalSum,
+      total_price: finalTotalPrice, // Отправляем сумму с учетом доставки
       status: 'new',
       user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
       phone: phone,      
-      address: address   
+      address: finalAddressInfo // Добавляем инфу о доставке прямо в текст адреса
     };
 
     try {
       const { error } = await supabase.from('orders').insert([orderData]);
       if (error) throw error; 
-      setCart({}); setIsCheckoutOpen(false); setPhone(''); setAddress('');
+      setCart({}); setIsCheckoutOpen(false); setPhone(''); setAddress(''); setDeliveryPrice(150); // Сброс
       if (window.Telegram?.WebApp?.initData) {
         window.Telegram.WebApp.showPopup({ title: "Заказ отправлен!", message: "Ожидаем подтверждения от ресторана...", buttons: [{ type: "ok" }] });
         window.Telegram.WebApp.close();
@@ -198,7 +208,6 @@ export default function RestaurantMenu() {
             const isActive = item.is_active !== false; 
             return (
               <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border flex items-center gap-4 transition-all ${isActive ? 'border-gray-100' : 'border-red-100 opacity-60 grayscale'}`}>
-                
                 {item.image_url ? (
                   <div className="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-gray-100">
                     <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
@@ -208,13 +217,11 @@ export default function RestaurantMenu() {
                     <span className="text-2xl">🍔</span>
                   </div>
                 )}
-                
                 <div className="flex-1 pr-2">
                   <h3 className={`font-bold text-lg leading-tight mb-1 ${!isActive && 'line-through text-gray-500'}`}>{item.name}</h3>
                   <p className={`text-sm font-semibold ${isActive ? 'text-gray-500' : 'text-red-500 line-through'}`}>{item.price} ₽</p>
                   {!isActive && <p className="text-red-500 text-xs font-bold mt-1">🚫 В стоп-листе</p>}
                 </div>
-                
                 <div className="flex items-center gap-2">
                   {isActive ? (
                     <>
@@ -243,7 +250,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Модалки остались без изменений */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-3xl p-6 max-w-md mx-auto w-full animate-slide-up">
@@ -253,7 +259,7 @@ export default function RestaurantMenu() {
                   <div key={item.id} className="flex justify-between items-center"><div className="flex-1"><p className="font-bold">{item.name}</p><p className="text-gray-500 text-sm">{item.price} ₽ x {cart[item.id]}</p></div><div className="flex items-center gap-3"><button onClick={() => removeFromCart(item.id)} className="bg-gray-100 w-8 h-8 rounded-lg">-</button><span className="font-bold">{cart[item.id]}</span><button onClick={() => addToCart(item.id)} className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg">+</button></div></div>
                 ))}
               </div>
-              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg">Оформить заказ за {totalSum} ₽</button>
+              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg">Оформить доставку</button>
             </div>
           </div>
         )}
@@ -270,16 +276,22 @@ export default function RestaurantMenu() {
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <label className="text-sm font-bold text-gray-700">Адрес доставки</label>
-                    <button onClick={getLocation} className="text-blue-500 text-sm font-bold">📍 GPS</button>
+                    <button onClick={getLocation} className="text-blue-500 text-sm font-bold flex items-center gap-1">
+                      📍 <span>Найти меня</span>
+                    </button>
                   </div>
-                  <div className="flex gap-2 overflow-x-auto pb-2 mb-2" style={{ scrollbarWidth: 'none' }}>
-                    {['Махачкала', 'Каспийск', 'Дербент'].map(c => (
-                      <button key={c} onClick={() => setAddress(c + ", " + address)} className="bg-blue-50 text-blue-600 px-3 py-1 rounded-lg text-xs font-bold border border-blue-100 whitespace-nowrap">+ {c}</button>
-                    ))}
-                  </div>
-                  <textarea value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Улица, дом, кв..." className="w-full border border-gray-200 p-4 rounded-xl outline-none focus:border-blue-500 h-24 resize-none bg-gray-50"/>
+                  <textarea value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Нажмите 'Найти меня' для расчета доставки..." className="w-full border border-gray-200 p-4 rounded-xl outline-none focus:border-blue-500 h-24 resize-none bg-gray-50 mb-2"/>
+                  <p className="text-xs text-gray-500 italic">⚠️ Для точного расчета доставки разрешите доступ к геопозиции (кнопка 📍)</p>
                 </div>
-                <button onClick={sendOrder} className="w-full bg-green-500 text-white py-4 rounded-2xl font-bold text-xl shadow-lg active:scale-95 transition-all mt-4">ПОДТВЕРДИТЬ</button>
+
+                {/* НОВОЕ: Блок расчета чека */}
+                <div className="bg-gray-50 p-4 rounded-xl space-y-2 border border-gray-100">
+                  <div className="flex justify-between text-sm text-gray-600"><span>Заказ:</span><span>{totalSum} ₽</span></div>
+                  <div className="flex justify-between text-sm text-gray-600"><span>Доставка (~):</span><span>{deliveryPrice} ₽</span></div>
+                  <div className="flex justify-between font-black text-lg pt-2 border-t border-gray-200"><span>К оплате:</span><span className="text-blue-600">{totalSum + deliveryPrice} ₽</span></div>
+                </div>
+
+                <button onClick={sendOrder} className="w-full bg-green-500 text-white py-4 rounded-2xl font-bold text-xl shadow-lg active:scale-95 transition-all mt-2">ПОДТВЕРДИТЬ</button>
               </div>
             </div>
           </div>
@@ -292,7 +304,6 @@ export default function RestaurantMenu() {
                 <h2 className="text-2xl font-black">Мои заказы</h2>
                 <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 text-gray-400 w-10 h-10 rounded-full flex items-center justify-center font-bold">✕</button>
               </div>
-              
               <div className="overflow-y-auto space-y-4 pr-2 pb-6">
                 {myOrders.length === 0 ? (
                   <div className="text-center py-10">
