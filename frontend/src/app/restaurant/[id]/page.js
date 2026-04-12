@@ -16,7 +16,6 @@ export default function RestaurantMenu() {
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isCartOpen, setIsCartOpen] = useState(false)
   
-  // Состояния для окна оформления
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -49,7 +48,6 @@ export default function RestaurantMenu() {
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
   const cartItems = products.filter(p => cart[p.id] > 0);
 
-  // ВОЗВРАЩАЕМ ФУНКЦИЮ GPS
   const getLocation = () => {
     if (!navigator.geolocation) {
       alert("Ваш браузер не поддерживает определение локации.");
@@ -69,10 +67,9 @@ export default function RestaurantMenu() {
   };
 
   const sendOrder = async () => {
-    // СТРОГАЯ ЗАЩИТА ТЕЛЕФОНА
-    const cleanPhone = phone.replace(/\D/g, ''); // Оставляем только цифры для проверки
-    if (cleanPhone.length < 11) {
-      alert("❌ Ошибка: В номере телефона должно быть минимум 11 цифр!");
+    const cleanPhone = phone.replace(/\D/g, ''); 
+    if (cleanPhone.length !== 11) {
+      alert("❌ Ошибка: Введите полный номер телефона (11 цифр)!");
       return;
     }
 
@@ -130,17 +127,45 @@ export default function RestaurantMenu() {
     }
   };
 
+  // НОВОЕ: Умная маска для телефона
+  const handlePhoneInput = (e) => {
+    // Оставляем только цифры
+    let input = e.target.value.replace(/\D/g, '');
+    
+    if (!input) {
+      setPhone('');
+      return;
+    }
+
+    // Жестко обрезаем до 11 цифр
+    input = input.substring(0, 11);
+
+    // Если начинается с 9, подставляем 7 (для России)
+    if (input[0] === '9') input = '7' + input;
+
+    let formatted = '';
+    
+    if (['7', '8'].includes(input[0])) {
+      // Форматируем под РФ: +7 (XXX) XXX-XX-XX
+      let firstSymbol = (input[0] === '8') ? '8' : '+7';
+      formatted = firstSymbol + ' ';
+      
+      if (input.length > 1) formatted += '(' + input.substring(1, 4);
+      if (input.length >= 5) formatted += ') ' + input.substring(4, 7);
+      if (input.length >= 8) formatted += '-' + input.substring(7, 9);
+      if (input.length >= 10) formatted += '-' + input.substring(9, 11);
+    } else {
+      // Если другой код страны — просто ставим плюс и до 11 цифр
+      formatted = '+' + input;
+    }
+
+    setPhone(formatted);
+  };
+
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' 
     ? products 
     : products.filter(p => (p.category || 'Основное') === activeCategory)
-
-  // ФУНКЦИЯ ДЛЯ ВВОДА ТОЛЬКО ЦИФР В ТЕЛЕФОН
-  const handlePhoneInput = (e) => {
-    // Удаляем все буквы, оставляем цифры, пробелы, +, скобки и дефисы
-    const val = e.target.value.replace(/[^\d\+ \-\(\)]/g, '');
-    setPhone(val);
-  }
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
@@ -249,15 +274,14 @@ export default function RestaurantMenu() {
                     value={phone}
                     onChange={handlePhoneInput}
                     placeholder="+7 (999) 000-00-00" 
+                    maxLength={18} // Дополнительная страховка
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all"
                   />
-                  <p className="text-xs text-gray-400 mt-1">Минимум 11 цифр</p>
                 </div>
 
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-medium text-gray-700">Куда везти?</label>
-                    {/* КНОПКА GPS ВЕРНУЛАСЬ СЮДА */}
                     <button 
                       onClick={getLocation} 
                       className="text-blue-500 text-sm font-bold flex items-center gap-1 active:scale-95 transition-transform"
