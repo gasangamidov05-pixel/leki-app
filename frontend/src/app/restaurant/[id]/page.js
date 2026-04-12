@@ -39,7 +39,7 @@ export default function RestaurantMenu() {
   const [apartment, setApartment] = useState('')
   const [entrance, setEntrance] = useState('')
 
-  // НОВОЕ: ЧЕК И ЗАГРУЗКА
+  // ЧЕК И ЗАГРУЗКА
   const [receiptFile, setReceiptFile] = useState(null)
   const [isUploading, setIsUploading] = useState(false)
 
@@ -183,7 +183,7 @@ export default function RestaurantMenu() {
     setPhone(formatted);
   };
 
-  // ОБНОВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ (С ВЫВОДОМ ОШИБОК)
+  // ОБНОВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ 
   const sendOrder = async () => {
     if (!receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
@@ -192,7 +192,7 @@ export default function RestaurantMenu() {
       // 1. Грузим чек в Storage
       const fileExt = receiptFile.name.split('.').pop();
       const fileName = `${Math.random()}.${fileExt}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('receipts')
         .upload(fileName, receiptFile);
 
@@ -220,12 +220,11 @@ export default function RestaurantMenu() {
         receipt_url: publicUrl // Ссылка на фото чека
       };
 
-      // Проверяем ошибку при записи в БД!
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
       if (insertError) {
         alert("Ошибка сохранения в базу: " + insertError.message);
         setIsUploading(false);
-        return; // Останавливаем выполнение, не закрываем окно
+        return; 
       }
 
       window.Telegram?.WebApp?.close();
@@ -354,3 +353,83 @@ export default function RestaurantMenu() {
                   <input id="suggest_address" type="text" value={address} onChange={(e) => {setAddress(e.target.value); setIsAddressValid(false)}} placeholder="Введите адрес..." className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16 text-sm"/>
                   <button onClick={getLocation} className="absolute right-2 top-2 bottom-2 bg-blue-50 text-blue-600 font-bold px-3 rounded-xl text-sm border border-blue-100">📍 GPS</button>
                 </div>
+
+                <div className="relative w-full h-48 rounded-3xl overflow-hidden border-2 border-gray-100">
+                  <div id="map_container" className="w-full h-full bg-gray-200 flex items-center justify-center">
+                    {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm">Загрузка карты...</span>}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                  <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                </div>
+
+                {/* НОВЫЙ БЛОК ОПЛАТЫ */}
+                <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
+                  <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
+                    <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Оплата при получении'}</span>
+                    <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
+                  </div>
+                  <p className="text-xs font-bold text-gray-500">
+                    Переведите <span className="text-blue-600">{totalSum + deliveryPrice} ₽</span> и прикрепите чек:
+                  </p>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    onChange={(e) => setReceiptFile(e.target.files[0])}
+                    className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
+                  />
+                </div>
+
+                <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
+                  <div className="flex justify-between text-sm font-bold text-blue-800"><span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span></div>
+                  <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900"><span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span></div>
+                </div>
+
+                <button 
+                  onClick={sendOrder} 
+                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11 || !receiptFile || isUploading} 
+                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 && receiptFile && !isUploading ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                >
+                  {isUploading ? 'ОТПРАВЛЯЕМ...' : 'ПОДТВЕРДИТЬ'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
+        {isOrdersOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-black">Мои заказы</h2>
+                <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
+              </div>
+              <div className="overflow-y-auto space-y-4 pr-2 pb-6">
+                {myOrders.length === 0 ? (
+                  <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
+                ) : (
+                  myOrders.map(o => {
+                    const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
+                    return (
+                      <div key={o.id} className="border-2 border-gray-100 rounded-3xl p-5 shadow-sm bg-white">
+                        <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
+                        <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-blue-100 pl-3">
+                          {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
+                        </div>
+                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
