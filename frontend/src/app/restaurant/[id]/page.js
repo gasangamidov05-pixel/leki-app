@@ -286,12 +286,12 @@ export default function RestaurantMenu() {
                 </div>
 
                 <button 
-                  onClick={sendOrder} 
-                  disabled={!isAddressValid || phone.length < 18} 
-                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all ${isAddressValid && phone.length >= 18 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-                >
-                  {isCalculating ? 'СЧИТАЕМ...' : 'ПОДТВЕРДИТЬ'}
-                </button>
+  onClick={sendOrder} 
+  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11} 
+  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all ${isAddressValid && phone.replace(/\D/g, '').length === 11 ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+>
+  {isCalculating ? 'СЧИТАЕМ...' : 'ПОДТВЕРДИТЬ'}
+</button>
               </div>
             </div>
           </div>
