@@ -1,115 +1,255 @@
-import asyncio
-import asyncpg
-import json
-from datetime import timedelta
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
+'use client'
 
-# --- НАСТРОЙКИ ---
-TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
-DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
-ADMIN_ID = 5340841151
+import { createClient } from '@supabase/supabase-js'
+import Link from 'next/link'
+import { useState, useEffect } from 'react'
+import { useParams } from 'next/navigation'
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
-async def get_db_conn():
-    return await asyncpg.connect(DB_URL, statement_cache_size=0)
+export default function RestaurantMenu() {
+  const params = useParams()
+  const [restaurant, setRestaurant] = useState(null)
+  const [products, setProducts] = useState([])
+  const [cart, setCart] = useState({})
+  
+  const [activeCategory, setActiveCategory] = useState('Все')
+  const [isCartOpen, setIsCartOpen] = useState(false)
+  
+  // Состояния для окна оформления и данных клиента
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
+  const [phone, setPhone] = useState('')
+  const [address, setAddress] = useState('')
 
-async def get_restaurants():
-    conn = await get_db_conn()
-    rows = await conn.fetch("SELECT name, delivery_radius FROM restaurants WHERE is_active = TRUE")
-    await conn.close()
-    return rows
+  useEffect(() => {
+    async function fetchData() {
+      const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
+      setRestaurant(res)
+      const { data: prod } = await supabase.from('products').select('*').eq('restaurant_id', params.id)
+      setProducts(prod || [])
+    }
+    fetchData()
+  }, [params.id])
 
-# --- КОМАНДА /start ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    try:
-        restaurants = await get_restaurants()
-        text = "Ассаламу алейкум! Доступные заведения:\n\n" + "\n".join([f"🍽 {r['name']}" for r in restaurants])
-    except Exception:
-        text = "Ассаламу алейкум! Добро пожаловать в сервис доставки LEKI."
-        
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))
-    ]])
-    await message.answer(text, reply_markup=kb)
+  const addToCart = (id) => setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
 
-# --- РАДАР ЗАКАЗОВ ---
-async def order_checker():
-    print("Радар запущен и ищет новые заказы...")
-    while True:
-        conn = None
-        try:
-            conn = await get_db_conn()
-            new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' LIMIT 5")
-            
-            for order in new_orders:
-                print(f"Обнаружен заказ №{order['id']}")
-                local_time = order['created_at'] + timedelta(hours=4)
-                time_str = local_time.strftime("%H:%M")
+  const removeFromCart = (id) => {
+    setCart(prev => {
+      const currentCount = prev[id] || 0;
+      if (currentCount <= 1) {
+        const newCart = { ...prev };
+        delete newCart[id];
+        if (Object.keys(newCart).length === 0) setIsCartOpen(false);
+        return newCart;
+      }
+      return { ...prev, [id]: currentCount - 1 };
+    });
+  }
 
-                user = json.loads(order['user_data']) if isinstance(order['user_data'], str) else order['user_data']
-                user_tg_id = user.get('id', 0)
-                
-                items = json.loads(order['items']) if isinstance(order['items'], str) else order['items']
-                items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
+  const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
+  const cartItems = products.filter(p => cart[p.id] > 0);
 
-                text = (
-                    f"🚨 <b>ЗАКАЗ №{order['id']}</b>\n"
-                    f"👤 Клиент: {user.get('first_name', 'Неизвестно')}\n"
-                    f"🏠 {order['restaurant_name']}\n\n"
-                    f"{items_text}\n"
-                    f"💰 <b>{order['total_price']} ₽</b>"
-                )
+  const sendOrder = async () => {
+    // Проверка, что поля не пустые
+    if (!phone || !address) {
+      alert("Пожалуйста, укажите телефон и адрес доставки!");
+      return;
+    }
 
-                kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="✅ Принять", callback_data=f"ok_{order['id']}_{user_tg_id}"),
-                    InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{user_tg_id}")
-                ]])
+    const selectedItems = cartItems.map(p => ({
+      name: p.name,
+      count: cart[p.id],
+      price: p.price
+    }));
 
-                await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=kb)
-                await conn.execute("UPDATE orders SET status = 'processing' WHERE id = $1", order['id'])
-                print(f"Заказ №{order['id']} отправлен админу.")
+    const orderData = {
+      restaurant_name: restaurant?.name,
+      items: selectedItems,
+      total_price: totalSum,
+      status: 'new',
+      user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
+      phone: phone,      // Отправляем телефон в базу
+      address: address   // Отправляем адрес в базу
+    };
 
-        except Exception as e:
-            print(f"ОШИБКА РАДАРА: {e}")
-        finally:
-            if conn: await conn.close()
-        await asyncio.sleep(15)
+    try {
+      const { data, error } = await supabase.from('orders').insert([orderData]).select();
+      if (error) throw error; 
 
-# --- ОБРАБОТКА КНОПОК ---
-@dp.callback_query(F.data.startswith(("ok_", "no_")))
-async def handle_buttons(callback: CallbackQuery):
-    print(f"Нажата кнопка: {callback.data}")
-    data = callback.data.split("_")
-    action = data[0]
-    order_id = int(data[1])
-    client_id = int(data[2])
+      setCart({});
+      setIsCheckoutOpen(false); // Закрываем окно оформления
+      setPhone('');
+      setAddress('');
 
-    conn = await get_db_conn()
-    try:
-        if action == "ok":
-            await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
-            if client_id:
-                await bot.send_message(client_id, "✅ Ваш заказ принят!")
-            await callback.message.edit_text(callback.message.text + "\n\n🟢 СТАТУС: ПРИНЯТ")
-        else:
-            await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
-            if client_id:
-                await bot.send_message(client_id, "❌ Заказ отклонен.")
-            await callback.message.edit_text(callback.message.text + "\n\n🔴 СТАТУС: ОТКЛОНЕН")
-    except Exception as e:
-        print(f"Ошибка кнопки: {e}")
-    finally:
-        await conn.close()
-        await callback.answer()
+      if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
+        window.Telegram.WebApp.showPopup({
+          title: "Заказ принят!",
+          message: `Скоро мы свяжемся с вами. Сумма: ${totalSum} ₽`,
+          buttons: [{ type: "ok" }]
+        });
+        window.Telegram.WebApp.close();
+      } else {
+        alert("✅ Заказ успешно оформлен!");
+      }
+    } catch (error) {
+      console.error('Ошибка заказа:', error);
+      if (error.message?.includes('WebAppMethodUnsupported')) {
+         setCart({});
+         setIsCheckoutOpen(false);
+         setPhone('');
+         setAddress('');
+         alert("✅ Заказ успешно оформлен!");
+      } else {
+         alert('❌ Ошибка при отправке заказа: ' + (error.message || error));
+      }
+    }
+  };
 
-async def main():
-    asyncio.create_task(order_checker())
-    await dp.start_polling(bot)
+  const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
+  const filteredProducts = activeCategory === 'Все' 
+    ? products 
+    : products.filter(p => (p.category || 'Основное') === activeCategory)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+  return (
+    <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
+      <div className="max-w-md mx-auto">
+        <Link href="/" className="text-blue-500 mb-4 inline-block">← Назад к списку</Link>
+        <h1 className="text-3xl font-bold mb-2">{restaurant?.name || 'Загрузка...'}</h1>
+        <p className="text-gray-500 mb-6">Выберите блюда</p>
+
+        {products.length > 0 && (
+          <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setActiveCategory(cat)}
+                className={`whitespace-nowrap px-4 py-2 rounded-xl font-medium transition-all ${
+                  activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 border border-gray-200'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="grid gap-4">
+          {filteredProducts.map((item) => (
+            <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
+              <div className="flex-1 pr-2">
+                <h3 className="font-bold text-lg leading-tight">{item.name}</h3>
+                <p className="text-gray-400 text-sm mt-1">{item.price} ₽</p>
+              </div>
+              <div className="flex items-center gap-3">
+                {cart[item.id] > 0 && (
+                  <>
+                    <button onClick={() => removeFromCart(item.id)} className="bg-gray-100 text-gray-600 w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all">-</button>
+                    <span className="font-bold text-lg w-4 text-center">{cart[item.id]}</span>
+                  </>
+                )}
+                <button onClick={() => addToCart(item.id)} className="bg-blue-500 text-white w-10 h-10 rounded-xl flex items-center justify-center text-xl active:scale-90 transition-all">+</button>
+              </div>
+            </div>
+          ))}
+          
+          {filteredProducts.length === 0 && (
+            <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>
+          )}
+        </div>
+
+        {totalSum > 0 && !isCartOpen && !isCheckoutOpen && (
+          <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
+            <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-2xl flex justify-between px-8 items-center active:scale-95 transition-all">
+              <span>🛒 Посмотреть корзину</span>
+              <span>{totalSum} ₽</span>
+            </button>
+          </div>
+        )}
+
+        {/* Модалка Корзины */}
+        {isCartOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+            <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up max-h-[80vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold">Корзина</h2>
+                <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 text-gray-500 w-8 h-8 rounded-full flex items-center justify-center font-bold">✕</button>
+              </div>
+              <div className="overflow-y-auto mb-6 pr-2 space-y-4">
+                {cartItems.map((item) => (
+                  <div key={item.id} className="flex justify-between items-center">
+                    <div className="flex-1">
+                      <p className="font-bold">{item.name}</p>
+                      <p className="text-gray-500 text-sm">{item.price} ₽ x {cart[item.id]}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => removeFromCart(item.id)} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-lg flex items-center justify-center text-lg active:scale-90">-</button>
+                      <span className="font-bold w-4 text-center">{cart[item.id]}</span>
+                      <button onClick={() => addToCart(item.id)} className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg flex items-center justify-center text-lg active:scale-90">+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="border-t border-gray-100 pt-4 mb-6">
+                <div className="flex justify-between items-center text-lg font-bold">
+                  <span>Итого к оплате:</span>
+                  <span>{totalSum} ₽</span>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all text-lg"
+              >
+                К оформлению ({totalSum} ₽)
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Модалка Оформления заказа (Адрес и Телефон) */}
+        {isCheckoutOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+            <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold">Детали доставки</h2>
+                <button onClick={() => setIsCheckoutOpen(false)} className="bg-gray-100 text-gray-500 w-8 h-8 rounded-full flex items-center justify-center font-bold">✕</button>
+              </div>
+              
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Номер телефона</label>
+                  <input 
+                    type="tel" 
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+7 (999) 000-00-00" 
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Улица, дом, квартира</label>
+                  <input 
+                    type="text" 
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="ул. Пушкина, д. 10, кв. 5" 
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                  />
+                </div>
+              </div>
+
+              <button 
+                onClick={sendOrder}
+                className="w-full bg-green-500 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all text-lg"
+              >
+                Подтвердить заказ
+              </button>
+            </div>
+          </div>
+        )}
+
+      </div>
+    </main>
+  )
+}
