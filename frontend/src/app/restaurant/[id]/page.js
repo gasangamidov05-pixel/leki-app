@@ -16,7 +16,7 @@ export default function RestaurantMenu() {
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isCartOpen, setIsCartOpen] = useState(false)
   
-  // НОВОЕ: Состояния для окна оформления и данных клиента
+  // Состояния для окна оформления
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -50,9 +50,16 @@ export default function RestaurantMenu() {
   const cartItems = products.filter(p => cart[p.id] > 0);
 
   const sendOrder = async () => {
-    // Проверка, что поля не пустые
-    if (!phone || !address) {
-      alert("Пожалуйста, укажите телефон и адрес доставки!");
+    // ЗАЩИТА: Проверяем, что телефон содержит минимум 11 цифр
+    const cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length < 11) {
+      alert("Пожалуйста, введите корректный номер телефона (11 цифр)!");
+      return;
+    }
+
+    // Проверяем, что адрес не пустой
+    if (!address.trim()) {
+      alert("Пожалуйста, укажите адрес доставки!");
       return;
     }
 
@@ -68,16 +75,17 @@ export default function RestaurantMenu() {
       total_price: totalSum,
       status: 'new',
       user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
-      phone: phone,      // Отправляем телефон в базу
-      address: address   // Отправляем адрес в базу
+      phone: phone,      
+      address: address   
     };
 
     try {
-      const { data, error } = await supabase.from('orders').insert([orderData]).select();
+      const { error } = await supabase.from('orders').insert([orderData]).select();
       if (error) throw error; 
 
+      // Очищаем всё после успешного заказа
       setCart({});
-      setIsCheckoutOpen(false); // Закрываем окно оформления
+      setIsCheckoutOpen(false); 
       setPhone('');
       setAddress('');
 
@@ -96,6 +104,8 @@ export default function RestaurantMenu() {
       if (error.message?.includes('WebAppMethodUnsupported')) {
          setCart({});
          setIsCheckoutOpen(false);
+         setPhone('');
+         setAddress('');
          alert("✅ Заказ успешно оформлен!");
       } else {
          alert('❌ Ошибка при отправке заказа: ' + (error.message || error));
@@ -115,6 +125,7 @@ export default function RestaurantMenu() {
         <h1 className="text-3xl font-bold mb-2">{restaurant?.name || 'Загрузка...'}</h1>
         <p className="text-gray-500 mb-6">Выберите блюда</p>
 
+        {/* Панель категорий */}
         {products.length > 0 && (
           <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
             {categories.map(cat => (
@@ -131,6 +142,7 @@ export default function RestaurantMenu() {
           </div>
         )}
 
+        {/* Список товаров */}
         <div className="grid gap-4">
           {filteredProducts.map((item) => (
             <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
@@ -149,8 +161,12 @@ export default function RestaurantMenu() {
               </div>
             </div>
           ))}
+          {filteredProducts.length === 0 && (
+            <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>
+          )}
         </div>
 
+        {/* Плавающая кнопка корзины */}
         {totalSum > 0 && !isCartOpen && !isCheckoutOpen && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-2xl flex justify-between px-8 items-center active:scale-95 transition-all">
@@ -160,7 +176,7 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Модалка Корзины */}
+        {/* Окно Корзины */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up max-h-[80vh] flex flex-col">
@@ -183,6 +199,12 @@ export default function RestaurantMenu() {
                   </div>
                 ))}
               </div>
+              <div className="border-t border-gray-100 pt-4 mb-6">
+                <div className="flex justify-between items-center text-lg font-bold">
+                  <span>Итого к оплате:</span>
+                  <span>{totalSum} ₽</span>
+                </div>
+              </div>
               <button 
                 onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all text-lg"
@@ -193,7 +215,7 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* НОВОЕ: Модалка Оформления заказа (Адрес и Телефон) */}
+        {/* Окно оформления (Телефон и Адрес) */}
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up">
@@ -203,6 +225,7 @@ export default function RestaurantMenu() {
               </div>
               
               <div className="space-y-4 mb-6">
+                {/* Ввод телефона */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Номер телефона</label>
                   <input 
@@ -210,17 +233,33 @@ export default function RestaurantMenu() {
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="+7 (999) 000-00-00" 
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all"
                   />
                 </div>
+
+                {/* Ввод адреса с быстрыми кнопками */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Улица, дом, квартира</label>
-                  <input 
-                    type="text" 
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Куда везти?</label>
+                  
+                  {/* Кнопки городов */}
+                  <div className="flex gap-2 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+                    {['Махачкала', 'Каспийск', 'Дербент'].map(city => (
+                      <button 
+                        key={city}
+                        onClick={() => setAddress(city + ", " + address)}
+                        className="bg-blue-50 text-blue-600 px-3 py-1 rounded-lg text-sm font-semibold whitespace-nowrap active:scale-95 transition-all"
+                      >
+                        + {city}
+                      </button>
+                    ))}
+                  </div>
+
+                  <textarea 
+                    rows={3}
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    placeholder="ул. Пушкина, д. 10, кв. 5" 
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                    placeholder="Улица, дом, подъезд..." 
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all resize-none"
                   />
                 </div>
               </div>
