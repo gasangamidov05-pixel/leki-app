@@ -96,12 +96,22 @@ async def handle_buttons(callback: CallbackQuery):
         if action == "ok":
             await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
             if client_id:
-                await bot.send_message(client_id, "✅ Ваш заказ принят и уже готовится!")
+                # НОВОЕ СООБЩЕНИЕ ОБ УСПЕХЕ
+                await bot.send_message(
+                    client_id, 
+                    f"🎉 <b>Отличные новости!</b>\nВаш заказ <b>№{order_id}</b> успешно принят заведением и уже начал готовиться. Приятного аппетита!", 
+                    parse_mode="HTML"
+                )
             await callback.message.edit_text(callback.message.text + "\n\n🟢 СТАТУС: ПРИНЯТ")
         else:
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
             if client_id:
-                await bot.send_message(client_id, "❌ К сожалению, заведение отклонило заказ.")
+                # НОВОЕ СООБЩЕНИЕ ОБ ОТМЕНЕ
+                await bot.send_message(
+                    client_id, 
+                    f"😔 <b>К сожалению, отмена...</b>\nЗаведение не смогло принять ваш заказ <b>№{order_id}</b>. Пожалуйста, свяжитесь с поддержкой или попробуйте заказать в другом ресторане.", 
+                    parse_mode="HTML"
+                )
             await callback.message.edit_text(callback.message.text + "\n\n🔴 СТАТУС: ОТКЛОНЕН")
     except Exception as e:
         print(f"Ошибка при нажатии кнопки: {e}")
