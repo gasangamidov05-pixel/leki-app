@@ -22,17 +22,57 @@ export default function RestaurantMenu() {
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
 
+  // ЗАГРУЗКА ДАННЫХ
   useEffect(() => {
     async function fetchData() {
       const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
       setRestaurant(res)
-      // Сортируем по ID, чтобы меню не прыгало
       const { data: prod } = await supabase.from('products').select('*').eq('restaurant_id', params.id).order('id')
       setProducts(prod || [])
     }
     fetchData()
   }, [params.id])
 
+  // НОВОЕ: МАГИЯ REAL-TIME (СЛУШАЕМ БАЗУ ДАННЫХ)
+  useEffect(() => {
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+
+    const channel = supabase
+      .channel('public:orders')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+        const updatedOrder = payload.new;
+        
+        // Проверяем, чей это заказ
+        const uData = typeof updatedOrder.user_data === 'string' ? JSON.parse(updatedOrder.user_data) : updatedOrder.user_data;
+        
+        // Если заказ принадлежит текущему клиенту
+        if ((tgUser && uData?.id === tgUser.id) || !tgUser) {
+          
+          // 1. Обновляем статус в списке (если открыто окно)
+          setMyOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
+
+          // 2. Показываем красивое всплывающее окно
+          let statusText = "обновлен 🔄";
+          if (updatedOrder.status === 'accepted') statusText = "принят и начал готовиться! 🔥";
+          if (updatedOrder.status === 'cancelled') statusText = "отменен заведением ❌";
+
+          if (window.Telegram?.WebApp?.initData) {
+            window.Telegram.WebApp.showPopup({
+              title: `Заказ #${updatedOrder.id}`,
+              message: `Статус: ${statusText}`,
+              buttons: [{ type: "ok" }]
+            });
+          } else {
+            alert(`Заказ #${updatedOrder.id} ${statusText}`);
+          }
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel) };
+  }, []);
+
+  // КОРЗИНА И ОФОРМЛЕНИЕ
   const addToCart = (id) => setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
 
   const removeFromCart = (id) => {
@@ -99,9 +139,9 @@ export default function RestaurantMenu() {
       if (error) throw error; 
       setCart({}); setIsCheckoutOpen(false); setPhone(''); setAddress('');
       if (window.Telegram?.WebApp?.initData) {
-        window.Telegram.WebApp.showPopup({ title: "Заказ принят!", message: "Скоро мы свяжемся с вами!", buttons: [{ type: "ok" }] });
+        window.Telegram.WebApp.showPopup({ title: "Заказ отправлен!", message: "Ожидаем подтверждения от ресторана...", buttons: [{ type: "ok" }] });
         window.Telegram.WebApp.close();
-      } else { alert("✅ Заказ успешно оформлен!"); }
+      } else { alert("✅ Заказ отправлен!"); }
     } catch (err) { alert("Ошибка: " + err.message); }
   };
 
@@ -155,9 +195,7 @@ export default function RestaurantMenu() {
 
         <div className="grid gap-3">
           {filteredProducts.map((item) => {
-            // ПРОВЕРКА СТОП-ЛИСТА
             const isActive = item.is_active !== false; 
-
             return (
               <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border flex items-center gap-4 transition-all ${isActive ? 'border-gray-100' : 'border-red-100 opacity-60 grayscale'}`}>
                 
@@ -205,8 +243,7 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* ... (Модалки Корзины, Оформления и Истории заказов остались прежними) ... */}
-        
+        {/* Модалки остались без изменений */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-3xl p-6 max-w-md mx-auto w-full animate-slide-up">
