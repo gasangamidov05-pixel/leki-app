@@ -49,17 +49,35 @@ export default function RestaurantMenu() {
   const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0)
   const cartItems = products.filter(p => cart[p.id] > 0);
 
+  // ВОЗВРАЩАЕМ ФУНКЦИЮ GPS
+  const getLocation = () => {
+    if (!navigator.geolocation) {
+      alert("Ваш браузер не поддерживает определение локации.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        const mapLink = `https://yandex.ru/maps/?pt=${lon},${lat}&z=18&l=map`;
+        setAddress(prev => prev ? `${prev}\n📍 Гео: ${mapLink}` : `📍 Гео: ${mapLink}`);
+      },
+      (error) => {
+        alert("Не удалось получить геоданные. Возможно, доступ запрещен в настройках.");
+      }
+    );
+  };
+
   const sendOrder = async () => {
-    // ЗАЩИТА: Проверяем, что телефон содержит минимум 11 цифр
-    const cleanPhone = phone.replace(/\D/g, '');
+    // СТРОГАЯ ЗАЩИТА ТЕЛЕФОНА
+    const cleanPhone = phone.replace(/\D/g, ''); // Оставляем только цифры для проверки
     if (cleanPhone.length < 11) {
-      alert("Пожалуйста, введите корректный номер телефона (11 цифр)!");
+      alert("❌ Ошибка: В номере телефона должно быть минимум 11 цифр!");
       return;
     }
 
-    // Проверяем, что адрес не пустой
     if (!address.trim()) {
-      alert("Пожалуйста, укажите адрес доставки!");
+      alert("❌ Ошибка: Пожалуйста, укажите адрес доставки!");
       return;
     }
 
@@ -83,7 +101,6 @@ export default function RestaurantMenu() {
       const { error } = await supabase.from('orders').insert([orderData]).select();
       if (error) throw error; 
 
-      // Очищаем всё после успешного заказа
       setCart({});
       setIsCheckoutOpen(false); 
       setPhone('');
@@ -118,6 +135,13 @@ export default function RestaurantMenu() {
     ? products 
     : products.filter(p => (p.category || 'Основное') === activeCategory)
 
+  // ФУНКЦИЯ ДЛЯ ВВОДА ТОЛЬКО ЦИФР В ТЕЛЕФОН
+  const handlePhoneInput = (e) => {
+    // Удаляем все буквы, оставляем цифры, пробелы, +, скобки и дефисы
+    const val = e.target.value.replace(/[^\d\+ \-\(\)]/g, '');
+    setPhone(val);
+  }
+
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
       <div className="max-w-md mx-auto">
@@ -125,7 +149,6 @@ export default function RestaurantMenu() {
         <h1 className="text-3xl font-bold mb-2">{restaurant?.name || 'Загрузка...'}</h1>
         <p className="text-gray-500 mb-6">Выберите блюда</p>
 
-        {/* Панель категорий */}
         {products.length > 0 && (
           <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
             {categories.map(cat => (
@@ -142,7 +165,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Список товаров */}
         <div className="grid gap-4">
           {filteredProducts.map((item) => (
             <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
@@ -161,12 +183,9 @@ export default function RestaurantMenu() {
               </div>
             </div>
           ))}
-          {filteredProducts.length === 0 && (
-            <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>
-          )}
+          {filteredProducts.length === 0 && <p className="text-center text-gray-400 mt-4">В этой категории пока нет блюд.</p>}
         </div>
 
-        {/* Плавающая кнопка корзины */}
         {totalSum > 0 && !isCartOpen && !isCheckoutOpen && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-2xl flex justify-between px-8 items-center active:scale-95 transition-all">
@@ -176,7 +195,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Окно Корзины */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up max-h-[80vh] flex flex-col">
@@ -215,7 +233,6 @@ export default function RestaurantMenu() {
           </div>
         )}
 
-        {/* Окно оформления (Телефон и Адрес) */}
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8 animate-slide-up">
@@ -225,23 +242,30 @@ export default function RestaurantMenu() {
               </div>
               
               <div className="space-y-4 mb-6">
-                {/* Ввод телефона */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Номер телефона</label>
                   <input 
                     type="tel" 
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={handlePhoneInput}
                     placeholder="+7 (999) 000-00-00" 
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-all"
                   />
+                  <p className="text-xs text-gray-400 mt-1">Минимум 11 цифр</p>
                 </div>
 
-                {/* Ввод адреса с быстрыми кнопками */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Куда везти?</label>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-sm font-medium text-gray-700">Куда везти?</label>
+                    {/* КНОПКА GPS ВЕРНУЛАСЬ СЮДА */}
+                    <button 
+                      onClick={getLocation} 
+                      className="text-blue-500 text-sm font-bold flex items-center gap-1 active:scale-95 transition-transform"
+                    >
+                      📍 Поделиться геометкой
+                    </button>
+                  </div>
                   
-                  {/* Кнопки городов */}
                   <div className="flex gap-2 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
                     {['Махачкала', 'Каспийск', 'Дербент'].map(city => (
                       <button 
