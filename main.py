@@ -152,7 +152,7 @@ async def cmd_courier(message: types.Message, state: FSMContext):
     try:
         text, kb = await get_courier_panel_text(conn, message.from_user.id)
         if not text:
-            apply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📝 Стать курьером", url="https://t.me/ТВОЙ_БОТ_ДЛЯ_ЗАЯВОК")]])
+            apply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📝 Стать курьером", url="https://t.me/suvanivi")]])
             return await message.answer("❌ Доступ запрещен. Хотите работать в LEKI?", reply_markup=apply_kb)
         
         c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
