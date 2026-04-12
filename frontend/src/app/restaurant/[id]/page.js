@@ -44,7 +44,7 @@ export default function RestaurantMenu() {
   const [isUploading, setIsUploading] = useState(false)
 
   const [deliveryPrice, setDeliveryPrice] = useState(150)
-  const [deliveryError, setDeliveryError] = useState('') // НОВОЕ СОСТОЯНИЕ ДЛЯ ОШИБКИ
+  const [deliveryError, setDeliveryError] = useState('') 
   const [isCalculating, setIsCalculating] = useState(false)
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
@@ -148,12 +148,9 @@ export default function RestaurantMenu() {
     });
   };
 
-  // ИСПРАВЛЕННАЯ ЛОГИКА ДОСТАВКИ (ДИНАМИЧЕСКИЙ ЛИМИТ)
   const updateDeliveryPrice = (coords) => {
     if (restaurant?.lat && restaurant?.lon) {
       const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
-      
-      // БЕРЕМ РАДИУС ИЗ БД (если вдруг там пусто, ставим 15 как запасной вариант)
       const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
 
       if (distance > MAX_DISTANCE) {
@@ -161,7 +158,7 @@ export default function RestaurantMenu() {
         setDeliveryPrice(0);
         setIsAddressValid(false);
       } else {
-        setDeliveryError(''); // Очищаем ошибку
+        setDeliveryError(''); 
         setDeliveryPrice(Math.round(150 + (distance * 22)));
         setIsAddressValid(true);
       }
@@ -295,6 +292,8 @@ export default function RestaurantMenu() {
               </div>
               <div className="flex-1">
                 <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
+                {/* ВЫВОД ОПИСАНИЯ БЛЮДА */}
+                {item.description && <p className="text-xs text-gray-500 mb-1 line-clamp-2">{item.description}</p>}
                 <p className="text-blue-600 font-black">{item.price} ₽</p>
               </div>
               <div className="flex items-center gap-2">
@@ -385,7 +384,6 @@ export default function RestaurantMenu() {
                 </div>
 
                 <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
-                  {/* ВЫВОДИМ ОШИБКУ, ЕСЛИ ДАЛЕКО */}
                   {deliveryError ? (
                     <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
                   ) : (
