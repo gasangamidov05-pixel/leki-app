@@ -14,6 +14,7 @@ export default function Home() {
   
   const [selectedCity, setSelectedCity] = useState(null)
   const [availableCities, setAvailableCities] = useState([])
+  const [searchQuery, setSearchQuery] = useState('')
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
@@ -25,7 +26,6 @@ export default function Home() {
     async function fetchData() {
       const now = new Date().toISOString();
 
-      // Получаем рестораны (только оплаченные)
       const { data: resData } = await supabase
         .from('restaurants')
         .select('*, restaurant_ratings(avg_rating)')
@@ -57,9 +57,52 @@ export default function Home() {
     }
   }
 
-  const filteredRestaurants = !selectedCity || selectedCity === 'Все' 
-    ? restaurants 
-    : restaurants.filter(r => r.city === selectedCity)
+  const isRestaurantOpenByHours = (hoursString) => {
+     if (!hoursString) return true; 
+     try {
+       const [startStr, endStr] = hoursString.split('-');
+       const [startH, startM] = startStr.split(':').map(Number);
+       const [endH, endM] = endStr.split(':').map(Number);
+       
+       const now = new Date();
+       const currentH = now.getHours();
+       const currentM = now.getMinutes();
+       
+       const currentTotal = currentH * 60 + currentM;
+       const startTotal = startH * 60 + startM;
+       const endTotal = endH * 60 + endM;
+
+       if (endTotal < startTotal) {
+           return currentTotal >= startTotal || currentTotal <= endTotal;
+       } else {
+           return currentTotal >= startTotal && currentTotal <= endTotal;
+       }
+     } catch (e) {
+         return true; 
+     }
+  };
+
+  // УМНАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА
+  const processedRestaurants = restaurants
+    .filter(r => {
+      const matchCity = !selectedCity || selectedCity === 'Все' || r.city === selectedCity;
+      const matchSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchCity && matchSearch;
+    })
+    .sort((a, b) => {
+      // 1. Спонсоры (Топ) всегда выше
+      if (a.is_pinned && !b.is_pinned) return -1;
+      if (!a.is_pinned && b.is_pinned) return 1;
+
+      // 2. Открытые выше закрытых
+      const aOpen = a.is_open && isRestaurantOpenByHours(a.working_hours);
+      const bOpen = b.is_open && isRestaurantOpenByHours(b.working_hours);
+      if (aOpen && !bOpen) return -1;
+      if (!aOpen && bOpen) return 1;
+
+      // 3. Сортировка по рейтингу (по убыванию)
+      return parseFloat(b.rating) - parseFloat(a.rating);
+    });
 
   const openMyOrders = async () => {
     setIsOrdersOpen(true);
@@ -89,39 +132,11 @@ export default function Home() {
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">{status}</span>;
   };
 
-  // Функция для проверки, открыт ли ресторан по часам работы
-  const isRestaurantOpenByHours = (hoursString) => {
-     if (!hoursString) return true; // Если не указано, считаем открытым
-     try {
-       const [startStr, endStr] = hoursString.split('-');
-       const [startH, startM] = startStr.split(':').map(Number);
-       const [endH, endM] = endStr.split(':').map(Number);
-       
-       const now = new Date();
-       const currentH = now.getHours();
-       const currentM = now.getMinutes();
-       
-       const currentTotal = currentH * 60 + currentM;
-       const startTotal = startH * 60 + startM;
-       const endTotal = endH * 60 + endM;
-
-       if (endTotal < startTotal) {
-           // Работает через полночь
-           return currentTotal >= startTotal || currentTotal <= endTotal;
-       } else {
-           // Обычный график
-           return currentTotal >= startTotal && currentTotal <= endTotal;
-       }
-     } catch (e) {
-         return true; // В случае ошибки формата считаем открытым
-     }
-  };
-
   return (
     <main className="min-h-screen p-4 bg-gray-50 text-black">
       <div className="max-w-md mx-auto">
         
-        <div className="flex justify-between items-start mb-8 pt-6">
+        <div className="flex justify-between items-start mb-6 pt-6">
           <div>
             <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">LEKI</h1>
             <div className="flex flex-col">
@@ -141,6 +156,18 @@ export default function Home() {
           </button>
         </div>
 
+        {/* СТРОКА ПОИСКА */}
+        <div className="mb-6 relative">
+          <span className="absolute left-4 top-3.5 text-gray-400">🔍</span>
+          <input 
+            type="text" 
+            placeholder="Найти заведение..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white border border-gray-200 p-3 pl-11 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm shadow-sm transition-all"
+          />
+        </div>
+
         {!selectedCity && !isLoading && (
           <div className="bg-blue-600 p-6 rounded-[24px] text-white mb-8 shadow-lg shadow-blue-100 animate-pulse">
             <h2 className="text-xl font-black mb-1">Ассаламу Алейкум!</h2>
@@ -151,16 +178,18 @@ export default function Home() {
         <div className="space-y-4">
           {isLoading ? (
             <p className="text-center text-gray-400 font-bold mt-10">Загрузка заведений...</p>
-          ) : filteredRestaurants.length > 0 ? (
-            filteredRestaurants.map((restaurant) => {
-              
+          ) : processedRestaurants.length > 0 ? (
+            processedRestaurants.map((restaurant) => {
               const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
 
               return (
-                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border border-gray-100 transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${restaurant.is_pinned ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
                   <div className="flex justify-between items-start mb-4">
                     <div>
-                      <h2 className="text-xl font-black mb-1">{restaurant.name}</h2>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h2 className="text-xl font-black">{restaurant.name}</h2>
+                        {restaurant.is_pinned && <span className="text-[10px] bg-gradient-to-r from-orange-400 to-red-500 text-white px-2 py-0.5 rounded-md font-black shadow-sm uppercase tracking-wider">🔥 Топ</span>}
+                      </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
                         <span className="text-xs font-bold text-yellow-500">⭐ {restaurant.rating}</span>
@@ -192,8 +221,10 @@ export default function Home() {
             })
           ) : (
             <div className="text-center py-10">
-               <p className="text-gray-400 font-bold">В городе {selectedCity} пока нет заведений.</p>
-               <button onClick={() => selectCity('Все')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
+               <p className="text-gray-400 font-bold">Ничего не найдено.</p>
+               {selectedCity !== 'Все' && (
+                 <button onClick={() => selectCity('Все')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
+               )}
             </div>
           )}
         </div>
