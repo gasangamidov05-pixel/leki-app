@@ -39,6 +39,10 @@ class AdminStates(StatesGroup):
     waiting_for_edit_name = State()
     waiting_for_edit_desc = State()
     waiting_for_edit_photo = State()
+    
+    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ОПЛАТЫ
+    waiting_for_yookassa_shop_id = State()
+    waiting_for_yookassa_secret = State()
 
 class CourierStates(StatesGroup):
     change_city = State()
@@ -164,7 +168,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
-        [InlineKeyboardButton(text="🆘 Поддержка", url="https://t.me/gasangamidov")] # <--- ЗАМЕНИ НА СВОЙ ЛОГИН (если нужно)
+        [InlineKeyboardButton(text="🆘 Поддержка", url="https://t.me/gasangamidov")]
     ])
     await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\n\n🛠 Админ: /admin\n🛵 Курьер: /courier", reply_markup=kb)
 
@@ -547,12 +551,88 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
-            [InlineKeyboardButton(text="💳 Реквизиты", callback_data=f"adm_card_{res['id']}")],
+            [InlineKeyboardButton(text="💳 Настройки оплаты", callback_data=f"adm_payment_{res['id']}")], # <--- ИЗМЕНЕНО ТУТ
             [InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}")]
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
 
+# --- МЕНЮ НАСТРОЕК ОПЛАТЫ ---
+@dp.callback_query(F.data.startswith("adm_payment_"))
+async def adm_payment_menu(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[2])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT * FROM restaurants WHERE id = $1", res_id)
+        method = res.get('payment_method') or 'manual'
+        method_text = "Банковский перевод (Скриншот)" if method == 'manual' else "ЮKassa (Онлайн оплата)"
+        
+        text = f"⚙️ <b>Настройки приема платежей</b>\n\nТекущий метод: <b>{method_text}</b>\n\n"
+        if method == 'manual':
+            text += f"💳 Ваша карта: <code>{res.get('card_number') or 'Не указана'}</code>\n<i>Клиент будет переводить деньги на эту карту и прикреплять чек.</i>"
+        else:
+            text += f"🛒 Shop ID: <code>{res.get('yookassa_shop_id') or 'Не указан'}</code>\n"
+            text += f"🔑 Secret Key: <code>{'Скрыт (Установлен)' if res.get('yookassa_secret_key') else 'Не указан'}</code>\n<i>Деньги будут поступать на ваш счет ЮKassa автоматически.</i>"
+            
+        kb = [[InlineKeyboardButton(text="🔄 Сменить метод оплаты", callback_data=f"adm_toggle_pay_{res['id']}")]]
+        
+        if method == 'manual':
+            kb.append([InlineKeyboardButton(text="💳 Изменить номер карты", callback_data=f"adm_card_{res['id']}")])
+        else:
+            kb.append([InlineKeyboardButton(text="🛒 Ввести Shop ID", callback_data=f"adm_shopid_{res['id']}")])
+            kb.append([InlineKeyboardButton(text="🔑 Ввести Secret Key", callback_data=f"adm_secret_{res['id']}")])
+            
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
+        
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_toggle_pay_"))
+async def adm_toggle_pay(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT payment_method FROM restaurants WHERE id = $1", res_id)
+        new_method = 'yookassa' if (res.get('payment_method') or 'manual') == 'manual' else 'manual'
+        await conn.execute("UPDATE restaurants SET payment_method = $1 WHERE id = $2", new_method, res_id)
+        
+        callback.data = f"adm_payment_{res_id}"
+        await adm_payment_menu(callback)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_shopid_"))
+async def adm_shopid(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_yookassa_shop_id)
+    await callback.message.answer("Отправьте ваш <b>Shop ID</b> от ЮKassa (только цифры):", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_yookassa_shop_id)
+async def process_shopid(message: types.Message, state: FSMContext):
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET yookassa_shop_id = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await message.answer("✅ Shop ID успешно сохранен!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_secret_"))
+async def adm_secret(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_yookassa_secret)
+    await callback.message.answer("Отправьте ваш <b>Secret Key</b> от ЮKassa (начинается на test_ или live_):", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_yookassa_secret)
+async def process_secret(message: types.Message, state: FSMContext):
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET yookassa_secret_key = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await message.answer("✅ Secret Key успешно сохранен!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+# --- ОСТАЛЬНЫЕ НАСТРОЙКИ АДМИНА ---
 @dp.callback_query(F.data.startswith("adm_toggle_open_"))
 async def adm_toggle_open(callback: CallbackQuery, state: FSMContext):
     res_id = int(callback.data.split("_")[3])
@@ -579,7 +659,6 @@ async def process_hours(message: types.Message, state: FSMContext):
         await cmd_admin(message, state)
     finally: await conn.close()
 
-# --- ДОБАВЛЕНИЕ НОВОГО БЛЮДА ---
 @dp.callback_query(F.data.startswith("adm_add_new_"))
 async def adm_start_add(callback: CallbackQuery, state: FSMContext):
     res_id = int(callback.data.split("_")[3])
@@ -629,7 +708,6 @@ async def adm_new_photo(message: types.Message, state: FSMContext):
         await cmd_admin(message, state)
     finally: await conn.close()
 
-# --- МЕНЮ БЛЮД И РЕДАКТИРОВАНИЕ ---
 @dp.callback_query(F.data.startswith("adm_menu_"))
 async def adm_show_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
