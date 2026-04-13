@@ -87,7 +87,8 @@ async def notify_client(conn, order_id, status_msg):
 async def create_yookassa_payment(shop_id, secret_key, amount, order_id, bot_link):
     url = "https://api.yookassa.ru/v3/payments"
     auth = aiohttp.BasicAuth(shop_id, secret_key)
-    headers = {"Idempotency-Key": str(uuid.uuid4())}
+    # ❗️ ИСПРАВЛЕНО: Idempotence-Key (через 'e')
+    headers = {"Idempotence-Key": str(uuid.uuid4())}
     payload = {
         "amount": {"value": f"{amount}.00", "currency": "RUB"},
         "capture": True,
