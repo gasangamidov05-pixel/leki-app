@@ -63,14 +63,6 @@ async def upload_photo_to_supabase(file_id: str):
                         return f"{SUPABASE_URL}/storage/v1/object/public/receipts/{filename}"
     return None
 
-async def notify_restaurant(conn, order_id, status_msg):
-    order = await conn.fetchrow("SELECT restaurant_name FROM orders WHERE id = $1", order_id)
-    if order:
-        admin = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name = $1", order['restaurant_name'])
-        target = admin['admin_tg_id'] if admin else MAIN_ADMIN_ID
-        try: await bot.send_message(target, f"📦 <b>Заказ №{order_id}</b>\nСтатус: {status_msg}", parse_mode="HTML")
-        except: pass
-
 async def notify_client(conn, order_id, status_msg):
     order = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
     if order and order['user_data']:
@@ -110,10 +102,7 @@ async def refund_yookassa_payment(shop_id, secret_key, payment_id, amount):
     url = "https://api.yookassa.ru/v3/refunds"
     auth = aiohttp.BasicAuth(shop_id, secret_key)
     headers = {"Idempotence-Key": str(uuid.uuid4())}
-    payload = {
-        "payment_id": payment_id,
-        "amount": {"value": f"{amount}.00", "currency": "RUB"}
-    }
+    payload = {"payment_id": payment_id, "amount": {"value": f"{amount}.00", "currency": "RUB"}}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, auth=auth, headers=headers, json=payload) as resp:
             if resp.status == 200: return True
@@ -183,20 +172,16 @@ async def cmd_superadmin(message: types.Message):
 async def superadmin_stats(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     args = message.text.split()
-    
     conn = await get_db_conn()
     try:
         if len(args) < 2:
             res_list = await conn.fetch("SELECT id, name, city FROM restaurants ORDER BY id")
             text = "📊 <b>Система аналитики LEKI</b>\n\nЧтобы посмотреть статистику, отправьте команду с ID ресторана (например: <code>/stats 1</code>)\n\n<b>Список заведений:</b>\n"
-            for r in res_list:
-                text += f"ID: {r['id']} — <b>{r['name']}</b> ({r['city']})\n"
+            for r in res_list: text += f"ID: {r['id']} — <b>{r['name']}</b> ({r['city']})\n"
             return await message.answer(text, parse_mode="HTML")
-            
         res_id = int(args[1])
         res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
         if not res: return await message.answer("❌ Ресторан не найден.")
-        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📅 За сегодня", callback_data=f"adm_statcalc_{res_id}_1")],
             [InlineKeyboardButton(text="🗓 За 7 дней", callback_data=f"adm_statcalc_{res_id}_7")],
@@ -290,29 +275,6 @@ async def admin_del_courier(message: types.Message):
         await conn.execute("DELETE FROM courier_reviews WHERE courier_tg_id = $1", c_id)
         await conn.execute("DELETE FROM couriers WHERE tg_id = $1", c_id)
         await message.answer(f"🚫 Курьер {c_id} удален.")
-    finally: await conn.close()
-
-@dp.message(Command("courier_stats"))
-async def courier_stats(message: types.Message):
-    if message.from_user.id != MAIN_ADMIN_ID: return
-    conn = await get_db_conn()
-    try:
-        rows = await conn.fetch("""
-            SELECT c.name, c.tg_id, ROUND(AVG(r.rating), 1) as rating, COUNT(r.id) as jobs, c.paid_until
-            FROM couriers c
-            LEFT JOIN courier_reviews r ON c.tg_id = r.courier_tg_id
-            GROUP BY c.tg_id, c.name, c.paid_until
-            ORDER BY rating DESC NULLS LAST
-        """)
-        text = "📊 <b>Рейтинг и подписки курьеров:</b>\n\n"
-        for r in rows:
-            rate = r['rating'] or 0
-            paid = r.get('paid_until')
-            is_paid = True if not paid else paid > datetime.now(timezone.utc)
-            status = "✅" if is_paid else "❌"
-            paid_str = paid.strftime('%d.%m') if paid else "Безлимит"
-            text += f"{status} <b>{r['name']}</b>: {rate}⭐ ({r['jobs']} зак.)\nДо: {paid_str}\nID: <code>{r['tg_id']}</code>\n\n"
-        await message.answer(text, parse_mode="HTML")
     finally: await conn.close()
 
 # ==========================================
@@ -475,7 +437,6 @@ async def courier_sos(callback: CallbackQuery):
             cour = await conn.fetchrow("SELECT name FROM couriers WHERE tg_id = $1", callback.from_user.id)
             cour_name = cour['name'] if cour else "Неизвестный"
             msg = f"🆘 <b>АЛЕРТ ОТ КУРЬЕРА!</b>\n\nКурьер <b>{cour_name}</b> (ID: <code>{callback.from_user.id}</code>) сообщил о проблеме с <b>Заказом №{order_id}</b>!\n\nСвяжитесь с ним: @{callback.from_user.username or callback.from_user.id}"
-            
             try: await bot.send_message(target, msg, parse_mode="HTML")
             except: pass
             if target != MAIN_ADMIN_ID:
@@ -574,28 +535,6 @@ async def done_order(callback: CallbackQuery):
         await callback.message.edit_text(f"🏁 <b>Заказ №{order_id} завершен!</b>")
     finally: await conn.close(); await callback.answer()
 
-@dp.callback_query(F.data.startswith("rres_"))
-async def handle_rate_res(callback: CallbackQuery):
-    _, order_id, res_id, stars = callback.data.split("_")
-    conn = await get_db_conn()
-    try:
-        await conn.execute("INSERT INTO restaurant_reviews (restaurant_id, order_id, rating) VALUES ($1, $2, $3)", int(res_id), int(order_id), int(stars))
-        order = await conn.fetchrow("SELECT courier_tg_id FROM orders WHERE id = $1", int(order_id))
-        kb_cour = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rcour_{order_id}_{order['courier_tg_id']}_{i}") for i in range(1, 6)]])
-        await callback.message.edit_text(f"✅ Оценка еды сохранена!\n\n🛵 <b>А как вам работа курьера?</b>", reply_markup=kb_cour, parse_mode="HTML")
-    except: await callback.answer("Уже оценено!")
-    finally: await conn.close()
-
-@dp.callback_query(F.data.startswith("rcour_"))
-async def handle_rate_cour(callback: CallbackQuery):
-    _, order_id, courier_id, stars = callback.data.split("_")
-    conn = await get_db_conn()
-    try:
-        await conn.execute("INSERT INTO courier_reviews (courier_tg_id, order_id, rating) VALUES ($1, $2, $3)", int(courier_id), int(order_id), int(stars))
-        await callback.message.edit_text("🙏 Спасибо! Это помогает нам становиться лучше.")
-    except: await callback.answer("Уже оценено!")
-    finally: await conn.close()
-
 # ==========================================
 #           АДМИН РЕСТОРАНА
 # ==========================================
@@ -611,13 +550,11 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         
         paid = res.get('paid_until')
         is_paid = True if not paid else paid > datetime.now(timezone.utc)
-        
         if not is_paid: status = "❌ Подписка истекла"
         elif res.get('is_open'): status = f"🟢 Открыто ({res.get('working_hours', '10:00-22:00')})"
         else: status = "🔴 ВРЕМЕННО ЗАКРЫТО"
             
         paid_str = paid.strftime('%d.%m') if paid else "Безлимит"
-        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
@@ -632,7 +569,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
 
-# --- СТАТИСТИКА ---
+# --- СТАТИСТИКА, МЕНЮ, И Т.Д. (ВЕСЬ СТАРЫЙ БЛОК БЕЗ ИЗМЕНЕНИЙ) ---
 @dp.callback_query(F.data.startswith("adm_stats_"))
 async def adm_stats_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
@@ -654,7 +591,6 @@ async def adm_stat_calc(callback: CallbackQuery):
     data = callback.data.split("_")
     res_id = int(data[2])
     period = data[3]
-    
     conn = await get_db_conn()
     try:
         res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
@@ -709,7 +645,6 @@ async def adm_stat_calc(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
 
-
 @dp.callback_query(F.data.startswith("adm_support_"))
 async def adm_support_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_support_link)
@@ -720,7 +655,6 @@ async def adm_support_start(callback: CallbackQuery, state: FSMContext):
 async def process_support_link(message: types.Message, state: FSMContext):
     if not message.text.startswith("http"):
         return await message.answer("❌ Ссылка должна начинаться с 'http' или 'https'. Попробуйте еще раз:")
-        
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE restaurants SET support_link = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
@@ -785,7 +719,7 @@ async def process_shopid(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("adm_secret_"))
 async def adm_secret(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_yookassa_secret)
-    await callback.message.answer("Отправьте ваш <b>Secret Key</b> от ЮKassa (начинается на test_ или live_):", parse_mode="HTML")
+    await callback.message.answer("Отправьте ваш <b>Secret Key</b> от ЮKassa:", parse_mode="HTML")
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_yookassa_secret)
@@ -861,7 +795,6 @@ async def adm_new_photo(message: types.Message, state: FSMContext):
         image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
         await msg.delete()
     elif message.text and message.text != "-": image_url = message.text
-        
     conn = await get_db_conn()
     try:
         await conn.execute("INSERT INTO products (restaurant_id, name, price, description, image_url, is_active) VALUES ($1, $2, $3, $4, $5, true)", 
@@ -1074,6 +1007,58 @@ async def order_checker():
             if conn: await conn.close()
         await asyncio.sleep(15)
 
+# --- НОВЫЙ ТАЙМЕР ЗАСТРЯВШИХ ЗАКАЗОВ (5 МИНУТ) ---
+async def stuck_order_checker():
+    while True:
+        conn = None
+        try:
+            conn = await get_db_conn()
+            # Ищем заказы, принятые больше 5 мин назад, без курьера и которых еще не пинговали
+            stuck_orders = await conn.fetch("""
+                SELECT id, restaurant_name 
+                FROM orders 
+                WHERE status = 'accepted' AND courier_tg_id IS NULL AND self_delivery_notified = false AND created_at < NOW() - INTERVAL '5 minutes'
+            """)
+            for o in stuck_orders:
+                res = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name = $1", o['restaurant_name'])
+                target = res['admin_tg_id'] if res and res['admin_tg_id'] else MAIN_ADMIN_ID
+
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🚗 Доставим своими силами", callback_data=f"selfdeliv_{o['id']}")],
+                    [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"no_{o['id']}_0")]
+                ])
+                try:
+                    await bot.send_message(target, f"⚠️ <b>Заказ №{o['id']} висит уже 5 минут!</b>\nКурьеры так и не забрали его. Вы доставите его сами или отменим заказ?", reply_markup=kb, parse_mode="HTML")
+                    await conn.execute("UPDATE orders SET self_delivery_notified = true WHERE id = $1", o['id'])
+                except: pass
+        except: pass
+        finally:
+            if conn: await conn.close()
+        await asyncio.sleep(30) # Проверяем каждые 30 сек
+
+# ОБРАБОТЧИК ДОСТАВКИ СИЛАМИ РЕСТОРАНА
+@dp.callback_query(F.data.startswith("selfdeliv_"))
+async def handle_self_delivery(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[1])
+    conn = await get_db_conn()
+    try:
+        # Ставим специальный ID курьера "-1", чтобы обычные курьеры больше не видели этот заказ
+        await conn.execute("UPDATE orders SET courier_tg_id = -1, status = 'delivering' WHERE id = $1", order_id)
+        order = await conn.fetchrow("SELECT address, phone, user_data FROM orders WHERE id = $1", order_id)
+        
+        u = json.loads(order['user_data'])
+        if u.get('id'):
+            try: await bot.send_message(u['id'], f"🚗 <b>Ресторан взял доставку Заказа №{order_id} на себя!</b>\nОжидайте курьера от заведения.", parse_mode="HTML")
+            except: pass
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏁 Заказ доставлен клиенту", callback_data=f"done_{order_id}")]
+        ])
+        await callback.message.edit_text(f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n📍 Адрес: {order['address']}\n📞 Тел: <code>{order['phone']}</code>", reply_markup=kb, parse_mode="HTML")
+    finally:
+        await conn.close()
+        await callback.answer()
+
 @dp.callback_query(F.data.startswith("time_"))
 async def ask_prep_time(callback: CallbackQuery):
     _, order_id, client_id = callback.data.split("_")
@@ -1089,11 +1074,20 @@ async def ask_prep_time(callback: CallbackQuery):
     ])
     await callback.message.edit_reply_markup(reply_markup=kb)
 
+# ИЗМЕНЕННАЯ ЛОГИКА ОТМЕНЫ И ПУШЕЙ КУРЬЕРАМ
 @dp.callback_query(F.data.startswith(("ok_", "no_")))
 async def handle_decision(callback: CallbackQuery):
     data = callback.data.split("_")
     action, order_id, client_id = data[0], int(data[1]), int(data[2])
     conn = await get_db_conn()
+    
+    # Если пришел client_id = 0 (нажали отмену из окна 5-минутного ожидания), находим реальный ID
+    if client_id == 0:
+        o_info = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
+        if o_info:
+            u = json.loads(o_info['user_data'])
+            client_id = u.get('id', 0)
+
     try:
         if action == "ok":
             prep_time = int(data[3])
@@ -1105,11 +1099,18 @@ async def handle_decision(callback: CallbackQuery):
             
             items = json.loads(order_info['items'])
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
-            couriers = await conn.fetch("SELECT tg_id FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
+            
+            # ДОСТАЕМ ВСЕХ КУРЬЕРОВ ГОРОДА
+            all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
+            active_couriers = [c for c in all_couriers if c['is_active']]
+            
+            # Если активных нет, шлем ВСЕМ. Если есть, шлем только активным.
+            target_couriers = active_couriers if active_couriers else all_couriers
             kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{order_id}")]])
             
-            for c in couriers:
-                try: await bot.send_message(c['tg_id'], f"🚨 Новый заказ №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: {order_info['address']}\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
+            for c in target_couriers:
+                prefix = "🚨 Новый заказ" if c['is_active'] else "🆘 ГОРЯЩИЙ ЗАКАЗ! На линии никого нет, выручай!"
+                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: {order_info['address']}\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
@@ -1151,6 +1152,7 @@ async def handle_decision(callback: CallbackQuery):
 
 async def main():
     asyncio.create_task(order_checker())
+    asyncio.create_task(stuck_order_checker()) # ЗАПУСК ТАЙМЕРА 5 МИНУТ
     asyncio.create_task(payment_processor())
     await dp.start_polling(bot)
 
