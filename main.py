@@ -40,6 +40,7 @@ class AdminStates(StatesGroup):
     waiting_for_edit_photo = State()
     waiting_for_yookassa_shop_id = State()
     waiting_for_yookassa_secret = State()
+    waiting_for_support_link = State() # НОВОЕ СОСТОЯНИЕ ДЛЯ ССЫЛКИ ПОДДЕРЖКИ
 
 class CourierStates(StatesGroup):
     change_city = State()
@@ -105,7 +106,6 @@ async def check_yookassa_payment(shop_id, secret_key, payment_id):
             if resp.status == 200: return await resp.json()
     return None
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ВОЗВРАТА СРЕДСТВ ---
 async def refund_yookassa_payment(shop_id, secret_key, payment_id, amount):
     url = "https://api.yookassa.ru/v3/refunds"
     auth = aiohttp.BasicAuth(shop_id, secret_key)
@@ -595,9 +595,31 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
             [InlineKeyboardButton(text="💳 Настройки оплаты", callback_data=f"adm_payment_{res['id']}")],
-            [InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}")]
+            [
+                InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}"),
+                InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")
+            ]
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_support_"))
+async def adm_support_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_support_link)
+    await callback.message.answer("Отправьте ссылку на поддержку вашего ресторана.\n(Например: <b>https://t.me/ваш_юзернейм</b> или ссылку на WhatsApp):", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_support_link)
+async def process_support_link(message: types.Message, state: FSMContext):
+    if not message.text.startswith("http"):
+        return await message.answer("❌ Ссылка должна начинаться с 'http' или 'https'. Попробуйте еще раз:")
+        
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET support_link = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await message.answer("✅ Ссылка на поддержку успешно сохранена!")
+        await state.clear()
+        await cmd_admin(message, state)
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_payment_"))
@@ -902,7 +924,7 @@ async def admin_cancel(callback: CallbackQuery, state: FSMContext):
     await cmd_admin(callback.message, state)
 
 # ==========================================
-#           РАДАР ЗАКАЗОВ
+#           РАДАР ЗАКАЗОВ И ОТМЕНА
 # ==========================================
 async def order_checker():
     while True:
@@ -991,7 +1013,7 @@ async def handle_decision(callback: CallbackQuery):
             
         else: # СЦЕНАРИЙ ОТМЕНЫ
             order = await conn.fetchrow("""
-                SELECT o.total_price, o.payment_id, o.receipt_url, o.phone, r.payment_method, r.yookassa_shop_id, r.yookassa_secret_key
+                SELECT o.total_price, o.payment_id, o.receipt_url, o.phone, r.payment_method, r.yookassa_shop_id, r.yookassa_secret_key, r.support_link
                 FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1
             """, order_id)
 
@@ -999,23 +1021,28 @@ async def handle_decision(callback: CallbackQuery):
             await callback.message.edit_text(text="🔴 ОТМЕНЕН")
 
             if order:
+                support_kb = []
+                if order.get('support_link') and order['support_link'].startswith("http"):
+                    support_kb.append([InlineKeyboardButton(text="📞 Написать в ресторан", url=order['support_link'])])
+                markup = InlineKeyboardMarkup(inline_keyboard=support_kb) if support_kb else None
+
                 # Авто-возврат ЮKassa
                 if order['payment_method'] == 'yookassa' and order['payment_id']:
                     refund_ok = await refund_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['payment_id'], order['total_price'])
                     if client_id:
                         if refund_ok:
-                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n💸 <b>Деньги ({order['total_price']} ₽) автоматически возвращены</b> на вашу карту! (Зачисление занимает от пары минут до 3 дней).", parse_mode="HTML")
+                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n💸 <b>Деньги ({order['total_price']} ₽) автоматически возвращены</b> на вашу карту! (Зачисление занимает от пары минут до 3 дней).", parse_mode="HTML", reply_markup=markup)
                         else:
-                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен.\n⚠️ Произошла ошибка при автоматическом возврате. Администратор скоро свяжется с вами.", parse_mode="HTML")
+                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен.\n⚠️ Произошла ошибка при автоматическом возврате. Свяжитесь с администратором.", parse_mode="HTML", reply_markup=markup)
                 
-                # Уведомление при ручном возврате (по чеку)
+                # Уведомление при ручном возврате
                 elif order['payment_method'] == 'manual' and order['receipt_url']:
                     if client_id:
-                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n📞 Администратор свяжется с вами по номеру <code>{order['phone']}</code> для возврата переведенных средств.", parse_mode="HTML")
-                    await callback.message.answer(f"⚠️ <b>ВНИМАНИЕ! Возврат средств.</b>\nВы отменили заказ №{order_id}, который был оплачен переводом по чеку.\n📞 <b>Свяжитесь с клиентом для возврата денег:</b> <code>{order['phone']}</code>\nСумма к возврату: <b>{order['total_price']} ₽</b>", parse_mode="HTML")
+                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n📞 Администратор свяжется с вами для возврата переведенных средств. Если этого не произошло, напишите им напрямую!", parse_mode="HTML", reply_markup=markup)
+                    await callback.message.answer(f"⚠️ <b>ВНИМАНИЕ! Возврат средств.</b>\nВы отменили заказ №{order_id}, который был оплачен переводом.\n📞 <b>Свяжитесь с клиентом для возврата денег:</b> <code>{order['phone']}</code>\nСумма к возврату: <b>{order['total_price']} ₽</b>", parse_mode="HTML")
                 else:
                     if client_id:
-                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.")
+                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.", reply_markup=markup)
     finally: await conn.close(); await callback.answer()
 
 async def main():
