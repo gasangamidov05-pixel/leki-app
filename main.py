@@ -13,6 +13,9 @@ TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
 MAIN_ADMIN_ID = 5340841151 
 
+# --- ЧАСОВОЙ ПОЯС (Дербент/Москва UTC+3) ---
+MSK = timezone(timedelta(hours=3))
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -256,7 +259,14 @@ async def take_order(callback: CallbackQuery):
         items = json.loads(order['items'])
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏃‍♂️ Забрал заказ", callback_data=f"picked_{order_id}")]])
+        # Кнопка навигатора в ресторан
+        res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
+        nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map" if res_coords and res_coords['lat'] else f"https://yandex.ru/maps/?text={order['restaurant_name']}"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗺 Маршрут в ресторан", url=nav_url)],
+            [InlineKeyboardButton(text="🏃‍♂️ Забрал заказ", callback_data=f"picked_{order_id}")]
+        ])
         await callback.message.edit_text(f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>Не забудьте получить {delivery_fee} ₽ за доставку в ресторане!</b>", reply_markup=kb, parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
 
@@ -570,7 +580,9 @@ async def handle_decision(callback: CallbackQuery):
     try:
         if action == "ok":
             prep_time = int(data[3])
-            ready_time = (datetime.now() + timedelta(minutes=prep_time)).strftime('%H:%M')
+            
+            # --- ТУТ ИСПОЛЬЗУЕМ ВРЕМЯ МСК ДЛЯ КОРРЕКТНОГО ОТОБРАЖЕНИЯ ---
+            ready_time = (datetime.now(MSK) + timedelta(minutes=prep_time)).strftime('%H:%M')
             
             await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
             if client_id: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
@@ -587,7 +599,7 @@ async def handle_decision(callback: CallbackQuery):
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
-            caption += f"\n\n🟢 ПРИНЯТ (Готовность: {prep_time} мин)"
+            caption += f"\n\n🟢 ПРИНЯТ (Готовность: к {ready_time})"
             if callback.message.photo: await callback.message.edit_caption(caption=caption)
             else: await callback.message.edit_text(text=caption)
         else:
