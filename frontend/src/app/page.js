@@ -39,7 +39,6 @@ export default function Home() {
         }));
         setRestaurants(formattedRestaurants)
         
-        // ДОБАВИЛ ГЛОБУС ДЛЯ ПРОВЕРКИ КЭША
         const cities = ['🌍 Все города', ...new Set(formattedRestaurants.map(r => r.city).filter(Boolean))]
         setAvailableCities(cities)
       }
@@ -83,7 +82,6 @@ export default function Home() {
      }
   };
 
-  // ЖЕСТКАЯ ПРОВЕРКА НА ВЫБРАННЫЙ ГОРОД
   const isSpecificCitySelected = selectedCity !== null && selectedCity !== '🌍 Все города' && selectedCity !== 'Все';
 
   // УМНАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА
@@ -94,19 +92,23 @@ export default function Home() {
       return matchCity && matchSearch;
     })
     .sort((a, b) => {
-      // 1. Спонсоры (Топ) выше, ТОЛЬКО если выбран конкретный город
       if (isSpecificCitySelected) {
           if (a.is_pinned && !b.is_pinned) return -1;
           if (!a.is_pinned && b.is_pinned) return 1;
       }
 
-      // 2. Открытые выше закрытых
-      const aOpen = a.is_open && isRestaurantOpenByHours(a.working_hours);
-      const bOpen = b.is_open && isRestaurantOpenByHours(b.working_hours);
-      if (aOpen && !bOpen) return -1;
-      if (!aOpen && bOpen) return 1;
+      // ЛОГИКА ОТКРЫТИЯ (Учитываем курьеров и свою доставку)
+      const aOpenHours = a.is_open && isRestaurantOpenByHours(a.working_hours);
+      const aCanDeliver = (a.can_self_deliver !== false) || (a.has_active_couriers !== false);
+      const aFullyOpen = aOpenHours && aCanDeliver;
 
-      // 3. Сортировка по рейтингу (по убыванию)
+      const bOpenHours = b.is_open && isRestaurantOpenByHours(b.working_hours);
+      const bCanDeliver = (b.can_self_deliver !== false) || (b.has_active_couriers !== false);
+      const bFullyOpen = bOpenHours && bCanDeliver;
+
+      if (aFullyOpen && !bFullyOpen) return -1;
+      if (!aFullyOpen && bFullyOpen) return 1;
+
       return parseFloat(b.rating) - parseFloat(a.rating);
     });
 
@@ -126,9 +128,7 @@ export default function Home() {
         userOrders = data.slice(0, 5);
       }
       setMyOrders(userOrders);
-    } catch (err) {
-      console.error("Ошибка загрузки заказов", err);
-    }
+    } catch (err) {}
   };
 
   const getStatusBadge = (status) => {
@@ -141,7 +141,6 @@ export default function Home() {
   return (
     <main className="min-h-screen p-4 bg-gray-50 text-black">
       <div className="max-w-md mx-auto">
-        
         <div className="flex justify-between items-start mb-6 pt-6">
           <div>
             <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">LEKI</h1>
@@ -162,7 +161,6 @@ export default function Home() {
           </button>
         </div>
 
-        {/* СТРОКА ПОИСКА */}
         <div className="mb-6 relative">
           <span className="absolute left-4 top-3.5 text-gray-400">🔍</span>
           <input 
@@ -187,11 +185,15 @@ export default function Home() {
           ) : processedRestaurants.length > 0 ? (
             processedRestaurants.map((restaurant) => {
               const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
-              // Показывать плашку ТОП только если выбран конкретный город
+              const canSelfDeliver = restaurant.can_self_deliver !== false;
+              const hasCouriers = restaurant.has_active_couriers !== false;
+              const isDeliverable = canSelfDeliver || hasCouriers;
+              const isFullyOpen = isOpenNow && isDeliverable;
+              
               const showPin = isSpecificCitySelected && restaurant.is_pinned;
 
               return (
-                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
@@ -213,9 +215,9 @@ export default function Home() {
                     </div>
                   </div>
                   
-                  {!isOpenNow ? (
+                  {!isFullyOpen ? (
                      <div className="w-full bg-red-50 text-red-600 font-black text-center py-4 rounded-2xl border-2 border-red-100">
-                        {restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО'}
+                        {!isOpenNow ? (restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО') : 'НЕТ СВОБОДНЫХ КУРЬЕРОВ'}
                      </div>
                   ) : (
                     <Link href={`/restaurant/${restaurant.id}`} className="w-full">
@@ -245,39 +247,20 @@ export default function Home() {
                 <h2 className="text-2xl font-black">Мои заказы</h2>
                 <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 text-gray-400 w-10 h-10 rounded-full flex items-center justify-center font-bold">✕</button>
               </div>
-              
               <div className="overflow-y-auto space-y-4 pr-2 pb-6">
                 {myOrders.length === 0 ? (
-                  <div className="text-center py-10">
-                    <span className="text-5xl block mb-4">🛒</span>
-                    <p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p>
-                  </div>
+                  <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
                 ) : (
                   myOrders.map(o => {
                     const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
                     return (
                       <div key={o.id} className="border-2 border-gray-50 rounded-3xl p-5 shadow-sm bg-white">
-                        <div className="flex justify-between items-center mb-4">
-                          <span className="font-black text-xl">Заказ #{o.id}</span>
-                          {getStatusBadge(o.status)}
-                        </div>
-                        <p className="text-sm font-bold text-gray-800 mb-4 bg-gray-50 p-2 rounded-xl inline-block">
-                          🏠 {o.restaurant_name}
-                        </p>
-                        
+                        <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
+                        <p className="text-sm font-bold text-gray-800 mb-4 bg-gray-50 p-2 rounded-xl inline-block">🏠 {o.restaurant_name}</p>
                         <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-gray-100 pl-3">
-                          {itemsList.map((item, idx) => (
-                            <div key={idx} className="flex justify-between items-center">
-                              <span className="font-medium">{item.name}</span>
-                              <span className="font-black text-gray-400">x{item.count}</span>
-                            </div>
-                          ))}
+                          {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
                         </div>
-                        
-                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black">
-                          <span className="text-gray-400">Итого:</span>
-                          <span className="text-blue-600 text-xl">{o.total_price} ₽</span>
-                        </div>
+                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
                       </div>
                     )
                   })
@@ -286,7 +269,6 @@ export default function Home() {
             </div>
           </div>
         )}
-
       </div>
     </main>
   )
