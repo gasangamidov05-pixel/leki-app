@@ -214,6 +214,9 @@ export default function RestaurantMenu() {
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
 
+      // ДОБЫВАЕМ КООРДИНАТЫ МАРКЕРА
+      const coords = mapRef.current ? mapRef.current.placemark.geometry.getCoordinates() : null;
+
       const orderData = {
         restaurant_name: restaurant?.name,
         items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
@@ -222,7 +225,9 @@ export default function RestaurantMenu() {
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
         address: fullAddressStr,
-        receipt_url: publicUrl
+        receipt_url: publicUrl,
+        lat: coords ? coords[0] : null,
+        lon: coords ? coords[1] : null
       };
 
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
