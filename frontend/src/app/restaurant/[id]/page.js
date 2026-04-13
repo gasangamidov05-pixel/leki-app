@@ -149,13 +149,17 @@ export default function RestaurantMenu() {
       const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
       const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
 
+      // Используем значения из базы ресторана или дефолтные
+      const BASE = restaurant?.base_delivery_price || 150;
+      const KM_PRICE = restaurant?.km_delivery_price || 22;
+
       if (distance > MAX_DISTANCE) {
         setDeliveryError(`Слишком далеко (${Math.round(distance)} км). Доставляем до ${MAX_DISTANCE} км.`);
         setDeliveryPrice(0);
         setIsAddressValid(false);
       } else {
         setDeliveryError(''); 
-        setDeliveryPrice(Math.round(150 + (distance * 22)));
+        setDeliveryPrice(Math.round(BASE + (distance * KM_PRICE)));
         setIsAddressValid(true);
       }
     }
