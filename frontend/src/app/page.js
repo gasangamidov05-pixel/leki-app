@@ -4,7 +4,6 @@ import Link from 'next/link'
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
-// Подключаемся к базе данных
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
@@ -13,36 +12,34 @@ export default function Home() {
   const [restaurants, setRestaurants] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   
-  // Состояния для городов
   const [selectedCity, setSelectedCity] = useState(null)
   const [availableCities, setAvailableCities] = useState([])
 
-  // Состояния для Истории заказов
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
 
-  // Загружаем данные при открытии
   useEffect(() => {
-    // Проверяем сохраненный город в памяти телефона
     const savedCity = localStorage.getItem('user_city')
     if (savedCity) setSelectedCity(savedCity)
 
     async function fetchData() {
-      // Получаем текущее время для проверки подписки
       const now = new Date().toISOString();
 
-      // 1. Получаем ТОЛЬКО активные и оплаченные рестораны
+      // Получаем рестораны (только оплаченные)
       const { data: resData } = await supabase
         .from('restaurants')
-        .select('*')
+        .select('*, restaurant_ratings(avg_rating)')
         .eq('is_active', true)
-        .gt('paid_until', now); // <-- Вот та самая проверка биллинга
+        .gt('paid_until', now);
 
-      setRestaurants(resData || [])
-      
-      // 2. Вытягиваем список уникальных городов из ресторанов
       if (resData) {
-        const cities = ['Все', ...new Set(resData.map(r => r.city).filter(Boolean))]
+        const formattedRestaurants = resData.map(r => ({
+           ...r,
+           rating: r.restaurant_ratings?.[0]?.avg_rating || '5.0'
+        }));
+        setRestaurants(formattedRestaurants)
+        
+        const cities = ['Все', ...new Set(formattedRestaurants.map(r => r.city).filter(Boolean))]
         setAvailableCities(cities)
       }
       
@@ -51,7 +48,6 @@ export default function Home() {
     fetchData()
   }, [])
 
-  // Сохранение выбора города
   const selectCity = (city) => {
     setSelectedCity(city)
     if (city === 'Все') {
@@ -61,12 +57,10 @@ export default function Home() {
     }
   }
 
-  // Фильтрация ресторанов
   const filteredRestaurants = !selectedCity || selectedCity === 'Все' 
     ? restaurants 
     : restaurants.filter(r => r.city === selectedCity)
 
-  // Функция истории заказов (твоя оригинальная)
   const openMyOrders = async () => {
     setIsOrdersOpen(true);
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -88,7 +82,6 @@ export default function Home() {
     }
   };
 
-  // Бейджики статусов (твои оригинальные)
   const getStatusBadge = (status) => {
     if (status === 'new') return <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">🕒 Ожидает</span>;
     if (status === 'processing' || status === 'accepted') return <span className="bg-green-100 text-green-700 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">🔥 Готовится</span>;
@@ -96,11 +89,38 @@ export default function Home() {
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">{status}</span>;
   };
 
+  // Функция для проверки, открыт ли ресторан по часам работы
+  const isRestaurantOpenByHours = (hoursString) => {
+     if (!hoursString) return true; // Если не указано, считаем открытым
+     try {
+       const [startStr, endStr] = hoursString.split('-');
+       const [startH, startM] = startStr.split(':').map(Number);
+       const [endH, endM] = endStr.split(':').map(Number);
+       
+       const now = new Date();
+       const currentH = now.getHours();
+       const currentM = now.getMinutes();
+       
+       const currentTotal = currentH * 60 + currentM;
+       const startTotal = startH * 60 + startM;
+       const endTotal = endH * 60 + endM;
+
+       if (endTotal < startTotal) {
+           // Работает через полночь
+           return currentTotal >= startTotal || currentTotal <= endTotal;
+       } else {
+           // Обычный график
+           return currentTotal >= startTotal && currentTotal <= endTotal;
+       }
+     } catch (e) {
+         return true; // В случае ошибки формата считаем открытым
+     }
+  };
+
   return (
     <main className="min-h-screen p-4 bg-gray-50 text-black">
       <div className="max-w-md mx-auto">
         
-        {/* ШАПКА С ВЫБОРОМ ГОРОДА */}
         <div className="flex justify-between items-start mb-8 pt-6">
           <div>
             <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">LEKI</h1>
@@ -121,7 +141,6 @@ export default function Home() {
           </button>
         </div>
 
-        {/* ПРИВЕТСТВИЕ, ЕСЛИ ГОРОД НЕ ВЫБРАН */}
         {!selectedCity && !isLoading && (
           <div className="bg-blue-600 p-6 rounded-[24px] text-white mb-8 shadow-lg shadow-blue-100 animate-pulse">
             <h2 className="text-xl font-black mb-1">Ассаламу Алейкум!</h2>
@@ -129,28 +148,48 @@ export default function Home() {
           </div>
         )}
         
-        {/* СПИСОК РЕСТОРАНОВ */}
         <div className="space-y-4">
           {isLoading ? (
             <p className="text-center text-gray-400 font-bold mt-10">Загрузка заведений...</p>
           ) : filteredRestaurants.length > 0 ? (
-            filteredRestaurants.map((restaurant) => (
-              <div key={restaurant.id} className="p-6 bg-white rounded-[32px] shadow-sm border border-gray-100 transition-all hover:shadow-md">
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h2 className="text-xl font-black mb-1">{restaurant.name}</h2>
-                    <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
+            filteredRestaurants.map((restaurant) => {
+              
+              const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
+
+              return (
+                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border border-gray-100 transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h2 className="text-xl font-black mb-1">{restaurant.name}</h2>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
+                        <span className="text-xs font-bold text-yellow-500">⭐ {restaurant.rating}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-bold text-gray-400">📍 {restaurant.delivery_radius} км</span>
+                      {restaurant.working_hours && (
+                          <span className="text-[10px] font-bold text-gray-400 mt-1 bg-gray-50 px-2 py-1 rounded-md border border-gray-100">
+                             🕒 {restaurant.working_hours}
+                          </span>
+                      )}
+                    </div>
                   </div>
-                  <span className="text-xs font-bold text-gray-400">📍 {restaurant.delivery_radius} км</span>
+                  
+                  {!isOpenNow ? (
+                     <div className="w-full bg-red-50 text-red-600 font-black text-center py-4 rounded-2xl border-2 border-red-100">
+                        {restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО'}
+                     </div>
+                  ) : (
+                    <Link href={`/restaurant/${restaurant.id}`} className="w-full">
+                      <button className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all shadow-lg shadow-blue-100 text-lg">
+                        Перейти к меню
+                      </button>
+                    </Link>
+                  )}
                 </div>
-                
-                <Link href={`/restaurant/${restaurant.id}`} className="w-full">
-                  <button className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all shadow-lg shadow-blue-100 text-lg">
-                    Перейти к меню
-                  </button>
-                </Link>
-              </div>
-            ))
+              )
+            })
           ) : (
             <div className="text-center py-10">
                <p className="text-gray-400 font-bold">В городе {selectedCity} пока нет заведений.</p>

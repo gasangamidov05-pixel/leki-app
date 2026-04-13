@@ -93,12 +93,6 @@ export default function RestaurantMenu() {
     if (!ymaps) return;
     ymaps.ready(() => {
       ymapsRef.current = ymaps;
-      const suggestView = new ymaps.SuggestView('suggest_address');
-      suggestView.events.add('select', (e) => {
-        const selectedAddress = e.get('item').value;
-        setAddress(selectedAddress);
-        geocodeAddress(selectedAddress);
-      });
 
       const map = new ymaps.Map("map_container", {
         center: [restaurant?.lat || 42.98, restaurant?.lon || 47.50],
@@ -117,19 +111,6 @@ export default function RestaurantMenu() {
       });
 
       mapRef.current = { map, placemark };
-    });
-  };
-
-  const geocodeAddress = (addr) => {
-    setIsCalculating(true);
-    ymapsRef.current.geocode(addr).then((res) => {
-      const firstGeoObject = res.geoObjects.get(0);
-      if (firstGeoObject) {
-        const coords = firstGeoObject.geometry.getCoordinates();
-        mapRef.current.map.setCenter(coords, 16);
-        mapRef.current.placemark.geometry.setCoordinates(coords);
-        updateDeliveryPrice(coords);
-      }
     });
   };
 
@@ -214,7 +195,6 @@ export default function RestaurantMenu() {
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
 
-      // ДОБЫВАЕМ КООРДИНАТЫ МАРКЕРА
       const coords = mapRef.current ? mapRef.current.placemark.geometry.getCoordinates() : null;
 
       const orderData = {
@@ -357,21 +337,29 @@ export default function RestaurantMenu() {
               <div className="space-y-4">
                 <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
                 
-                <div className="relative">
-                  <input id="suggest_address" type="text" value={address} onChange={(e) => {setAddress(e.target.value); setIsAddressValid(false)}} placeholder="Введите адрес..." className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium pr-16 text-sm"/>
-                  <button onClick={getLocation} className="absolute right-2 top-2 bottom-2 bg-blue-50 text-blue-600 font-bold px-3 rounded-xl text-sm border border-blue-100">📍 GPS</button>
+                {/* ИЗМЕНЕННЫЙ БЛОК КАРТЫ */}
+                <div className="bg-blue-50 p-4 rounded-2xl border-2 border-blue-100 text-center mb-2">
+                   <p className="text-sm font-bold text-blue-800 mb-2">Поставьте метку на дом, куда доставить заказ:</p>
+                   <button onClick={getLocation} className="bg-white text-blue-600 font-black px-4 py-2 rounded-xl text-sm shadow-sm active:scale-95 transition-all">📍 Найти меня (GPS)</button>
                 </div>
 
-                <div className="relative w-full h-48 rounded-3xl overflow-hidden border-2 border-gray-100">
-                  <div id="map_container" className="w-full h-full bg-gray-200 flex items-center justify-center">
-                    {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm">Загрузка карты...</span>}
+                <div className="relative w-full h-56 rounded-3xl overflow-hidden border-2 border-gray-200 shadow-inner">
+                  <div id="map_container" className="w-full h-full bg-gray-100 flex items-center justify-center">
+                    {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm animate-pulse">Загрузка карты...</span>}
                   </div>
+                  {/* Показываем адрес текстом ПОВЕРХ карты для удобства */}
+                  {address && (
+                      <div className="absolute bottom-2 left-2 right-2 bg-white/90 backdrop-blur-md p-2 rounded-xl border border-white/50 text-xs font-bold text-center shadow-lg line-clamp-2">
+                          {address}
+                      </div>
+                  )}
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex gap-3 mt-2">
                   <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                   <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
+                {/* КОНЕЦ ИЗМЕНЕННОГО БЛОКА КАРТЫ */}
 
                 <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
                   <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>

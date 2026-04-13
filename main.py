@@ -27,6 +27,7 @@ class AdminStates(StatesGroup):
     waiting_for_new_name = State()
     waiting_for_new_price = State()
     waiting_for_new_desc = State()
+    waiting_for_hours = State() # НОВОЕ СОСТОЯНИЕ ДЛЯ ЧАСОВ РАБОТЫ
 
 class CourierStates(StatesGroup):
     change_city = State()
@@ -101,7 +102,7 @@ async def admin_set_city_price(message: types.Message):
     try:
         await conn.execute("INSERT INTO city_pricing (city_name, base_price, km_price) VALUES ($1, $2, $3) ON CONFLICT (city_name) DO UPDATE SET base_price = $2, km_price = $3", city, base, km)
         await conn.execute("UPDATE restaurants SET base_delivery_price = $1, km_delivery_price = $2 WHERE city = $3", base, km, city)
-        await message.answer(f"✅ Цены для г. {city} обновлены: База {base}₽, Км {km}₽\n\nВНИМАНИЕ: Если цены не обновились в приложении, зайдите в таблицу restaurants в базе данных и укажите эти значения вручную для нужного ресторана.")
+        await message.answer(f"✅ Цены для г. {city} обновлены: База {base}₽, Км {km}₽")
     finally: await conn.close()
 
 # ==========================================
@@ -255,11 +256,9 @@ async def take_order(callback: CallbackQuery):
         await notify_restaurant(conn, order_id, "Курьер принял заказ и едет в ресторан 🏃‍♂️")
         await notify_client(conn, order_id, "Мы нашли курьера! Он уже спешит в ресторан. 🏃‍♂️")
         
-        # Расчет суммы доставки для курьера
         items = json.loads(order['items'])
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         
-        # Кнопка навигатора в ресторан
         res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
         nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map" if res_coords and res_coords['lat'] else f"https://yandex.ru/maps/?text={order['restaurant_name']}"
         
@@ -281,7 +280,6 @@ async def picked_order(callback: CallbackQuery):
         await notify_restaurant(conn, order_id, "Курьер забрал еду и выехал к клиенту 🚴‍♂️")
         await notify_client(conn, order_id, "Курьер забрал ваш заказ и уже в пути! 🚴‍♂️💨")
         
-        # Генерируем точную ссылку Яндекс Карт по координатам клиента (lat, lon)
         if order['lat'] and order['lon']:
             nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
         else:
@@ -373,15 +371,53 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         
         paid = res.get('paid_until')
         is_paid = True if not paid else paid > datetime.now(timezone.utc)
-        status = "✅ Оплачено" if is_paid else "❌ Подписка истекла"
+        
+        # --- НОВАЯ ЛОГИКА ОТОБРАЖЕНИЯ СТАТУСА ---
+        if not is_paid:
+            status = "❌ Подписка истекла"
+        elif res.get('is_open'):
+            status = f"🟢 Открыто ({res.get('working_hours', '10:00-22:00')})"
+        else:
+            status = "🔴 ВРЕМЕННО ЗАКРЫТО"
+            
         paid_str = paid.strftime('%d.%m') if paid else "Безлимит"
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
+            [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
             [InlineKeyboardButton(text="💳 Реквизиты", callback_data=f"adm_card_{res['id']}")],
             [InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}")]
         ])
-        await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Статус: {status} (до {paid_str})", parse_mode="HTML", reply_markup=kb)
+        await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
+    finally: await conn.close()
+
+# --- ЭКСТРЕННОЕ ВЫКЛЮЧЕНИЕ РЕСТОРАНА ---
+@dp.callback_query(F.data.startswith("adm_toggle_open_"))
+async def adm_toggle_open(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET is_open = NOT COALESCE(is_open, true) WHERE id = $1", res_id)
+        await callback.message.delete()
+        await cmd_admin(callback.message, state) # Перерисовываем меню
+    finally: await conn.close()
+
+# --- НАСТРОЙКА ЧАСОВ РАБОТЫ ---
+@dp.callback_query(F.data.startswith("adm_hours_"))
+async def adm_hours_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_hours)
+    await callback.message.answer("Укажите часы работы (например: <b>10:00-23:00</b>):", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_hours)
+async def process_hours(message: types.Message, state: FSMContext):
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET working_hours = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await message.answer("✅ Часы работы обновлены!")
+        await state.clear()
+        await cmd_admin(message, state)
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_add_new_"))
@@ -532,14 +568,14 @@ async def order_checker():
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
                 city_name = res_info['city'] if res_info else '-'
                 
-                # РАСЧЕТ ДОЛИ КУРЬЕРА ДЛЯ УВЕДОМЛЕНИЯ РЕСТОРАНА
                 items_sum = sum([i['price'] * i['count'] for i in items])
                 delivery_fee = order['total_price'] - items_sum
                 
                 active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", city_name)
                 courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров!</b>" if active_couriers == 0 else f"🟢 Курьеров на линии: {active_couriers}"
                 
-                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name')}\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
+                # --- ТУТ ДОБАВЛЕН НОМЕР ТЕЛЕФОНА КЛИЕНТА ---
+                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
                 
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="✅ Принять (Выбрать время)", callback_data=f"time_{order['id']}_{u.get('id')}")],
@@ -580,8 +616,6 @@ async def handle_decision(callback: CallbackQuery):
     try:
         if action == "ok":
             prep_time = int(data[3])
-            
-            # --- ТУТ ИСПОЛЬЗУЕМ ВРЕМЯ МСК ДЛЯ КОРРЕКТНОГО ОТОБРАЖЕНИЯ ---
             ready_time = (datetime.now(MSK) + timedelta(minutes=prep_time)).strftime('%H:%M')
             
             await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
