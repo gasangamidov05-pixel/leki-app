@@ -2,6 +2,7 @@ import asyncio
 import asyncpg
 import json
 import aiohttp
+import uuid
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -35,12 +36,10 @@ class AdminStates(StatesGroup):
     waiting_for_new_photo = State()
     waiting_for_hours = State()
     
-    # Состояния для редактирования
     waiting_for_edit_name = State()
     waiting_for_edit_desc = State()
     waiting_for_edit_photo = State()
     
-    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ОПЛАТЫ
     waiting_for_yookassa_shop_id = State()
     waiting_for_yookassa_secret = State()
 
@@ -50,28 +49,21 @@ class CourierStates(StatesGroup):
 async def get_db_conn():
     return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
-# --- ФУНКЦИЯ ЗАГРУЗКИ ФОТО В SUPABASE ---
 async def upload_photo_to_supabase(file_id: str):
     file = await bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}"
-    
     async with aiohttp.ClientSession() as session:
         async with session.get(file_url) as resp:
             if resp.status == 200:
                 file_bytes = await resp.read()
                 filename = f"prod_{file_id}.jpg"
                 upload_url = f"{SUPABASE_URL}/storage/v1/object/receipts/{filename}"
-                headers = {
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "apikey": SUPABASE_KEY,
-                    "Content-Type": "image/jpeg"
-                }
+                headers = {"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY, "Content-Type": "image/jpeg"}
                 async with session.post(upload_url, headers=headers, data=file_bytes) as up_resp:
                     if up_resp.status in (200, 201):
                         return f"{SUPABASE_URL}/storage/v1/object/public/receipts/{filename}"
     return None
 
-# --- ФУНКЦИИ УВЕДОМЛЕНИЙ ---
 async def notify_restaurant(conn, order_id, status_msg):
     order = await conn.fetchrow("SELECT restaurant_name FROM orders WHERE id = $1", order_id)
     if order:
@@ -88,6 +80,79 @@ async def notify_client(conn, order_id, status_msg):
             if u.get('id'):
                 await bot.send_message(u['id'], f"🛎 <b>Ваш заказ №{order_id}</b>\n{status_msg}", parse_mode="HTML")
         except: pass
+
+# ==========================================
+#           ИНТЕГРАЦИЯ ЮKASSA
+# ==========================================
+async def create_yookassa_payment(shop_id, secret_key, amount, order_id, bot_link):
+    url = "https://api.yookassa.ru/v3/payments"
+    auth = aiohttp.BasicAuth(shop_id, secret_key)
+    headers = {"Idempotency-Key": str(uuid.uuid4())}
+    payload = {
+        "amount": {"value": f"{amount}.00", "currency": "RUB"},
+        "capture": True,
+        "confirmation": {"type": "redirect", "return_url": bot_link},
+        "description": f"Оплата заказа №{order_id}"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, auth=auth, headers=headers, json=payload) as resp:
+            if resp.status == 200: return await resp.json()
+    return None
+
+async def check_yookassa_payment(shop_id, secret_key, payment_id):
+    url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
+    auth = aiohttp.BasicAuth(shop_id, secret_key)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, auth=auth) as resp:
+            if resp.status == 200: return await resp.json()
+    return None
+
+async def payment_processor():
+    bot_info = await bot.get_me()
+    bot_link = f"https://t.me/{bot_info.username}"
+    
+    while True:
+        conn = None
+        try:
+            conn = await get_db_conn()
+            
+            # 1. ИЩЕМ НОВЫЕ ЗАКАЗЫ ДЛЯ ВЫСТАВЛЕНИЯ СЧЕТА
+            new_payments = await conn.fetch("SELECT o.*, r.yookassa_shop_id, r.yookassa_secret_key FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'awaiting_payment' LIMIT 5")
+            for order in new_payments:
+                if not order['yookassa_shop_id'] or not order['yookassa_secret_key']:
+                    await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order['id'])
+                    await notify_client(conn, order['id'], "❌ Ошибка оплаты: Ресторан не настроил онлайн-кассу. Заказ отменен.")
+                    continue
+                    
+                pay_data = await create_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['total_price'], order['id'], bot_link)
+                if pay_data and 'confirmation' in pay_data:
+                    payment_id = pay_data['id']
+                    pay_url = pay_data['confirmation']['confirmation_url']
+                    
+                    await conn.execute("UPDATE orders SET status = 'payment_pending', payment_id = $1 WHERE id = $2", payment_id, order['id'])
+                    
+                    u = json.loads(order['user_data'])
+                    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ОПЛАТИТЬ ЗАКАЗ", url=pay_url)]])
+                    try: await bot.send_message(u['id'], f"🧾 <b>Счет на оплату заказа №{order['id']}</b>\nСумма: {order['total_price']} ₽\n\n<i>Нажмите кнопку ниже, чтобы оплатить картой (ЮKassa). После успешной оплаты заказ автоматически отправится на кухню!</i>", reply_markup=kb, parse_mode="HTML")
+                    except: pass
+
+            # 2. ПРОВЕРЯЕМ СТАТУС ВЫСТАВЛЕННЫХ СЧЕТОВ
+            pending_payments = await conn.fetch("SELECT o.*, r.yookassa_shop_id, r.yookassa_secret_key FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'payment_pending' LIMIT 10")
+            for order in pending_payments:
+                pay_info = await check_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['payment_id'])
+                if pay_info:
+                    if pay_info['status'] == 'succeeded':
+                        # Переводим в статус 'new', чтобы радар заказов отправил его в ресторан!
+                        await conn.execute("UPDATE orders SET status = 'new' WHERE id = $1", order['id'])
+                        await notify_client(conn, order['id'], "✅ Оплата успешно получена! Ваш заказ передан в ресторан и начал готовиться.")
+                    elif pay_info['status'] == 'canceled':
+                        await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order['id'])
+                        await notify_client(conn, order['id'], "❌ Время ожидания оплаты истекло, или оплата была отменена. Заказ аннулирован.")
+        except Exception as e:
+            pass
+        finally:
+            if conn: await conn.close()
+        await asyncio.sleep(5)
 
 # ==========================================
 #           ПАНЕЛЬ СУПЕР-АДМИНА
@@ -121,10 +186,8 @@ async def admin_pin_res(message: types.Message):
     try:
         res = await conn.fetchrow("SELECT name, is_pinned FROM restaurants WHERE id = $1", res_id)
         if not res: return await message.answer("❌ Ресторан не найден!")
-        
         new_status = not res['is_pinned']
         await conn.execute("UPDATE restaurants SET is_pinned = $1 WHERE id = $2", new_status, res_id)
-        
         status_text = "🔥 ЗАКРЕПЛЕН В ТОПЕ" if new_status else "🧊 Откреплен из топа"
         await message.answer(f"✅ Ресторан <b>{res['name']}</b> теперь {status_text}!", parse_mode="HTML")
     finally: await conn.close()
@@ -134,11 +197,9 @@ async def admin_set_paid(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     args = message.text.split()
     if len(args) < 4: return await message.answer("Формат: /set_paid [res/cour] [ID] [Дни]")
-    
     target_type, target_id, days = args[1], int(args[2]), int(args[3])
     table = "restaurants" if target_type == "res" else "couriers"
     id_col = "id" if target_type == "res" else "tg_id"
-    
     conn = await get_db_conn()
     try:
         new_date = datetime.now(timezone.utc) + timedelta(days=days)
@@ -151,7 +212,6 @@ async def admin_set_city_price(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     args = message.text.split()
     if len(args) < 4: return await message.answer("Формат: /set_city_price Город База Км")
-    
     city, base, km = args[1], int(args[2]), int(args[3])
     conn = await get_db_conn()
     try:
@@ -278,11 +338,8 @@ async def cmd_courier(message: types.Message, state: FSMContext):
         c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
         if c['city'] == '-':
             cities = await conn.fetch("SELECT city_name FROM city_pricing")
-            if not cities:
-                return await message.answer("❌ Админ еще не добавил города в систему! Обратитесь к руководству.")
-            city_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities
-            ])
+            if not cities: return await message.answer("❌ Админ еще не добавил города в систему! Обратитесь к руководству.")
+            city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
             await message.answer("📍 Выберите ваш город для работы:", reply_markup=city_kb)
         else: 
             await message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -293,11 +350,8 @@ async def cour_change_city_handler(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         cities = await conn.fetch("SELECT city_name FROM city_pricing")
-        if not cities:
-            return await callback.answer("Города еще не добавлены!", show_alert=True)
-        city_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities
-        ])
+        if not cities: return await callback.answer("Города еще не добавлены!", show_alert=True)
+        city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
         await callback.message.edit_text("📍 Выберите ваш город из списка:", reply_markup=city_kb)
     finally: await conn.close()
 
@@ -332,11 +386,9 @@ async def cour_toggle_status(callback: CallbackQuery):
                 kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{p_order['id']}")]])
                 try: await bot.send_message(callback.from_user.id, f"🚨 <b>Свободный заказ №{p_order['id']}</b>\nИз: {p_order['restaurant_name']}\nКуда: {p_order['address']}", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
-                
     finally: await conn.close(); await callback.answer()
 
 # --- ЛОГИКА ЦЕПОЧКИ ЗАКАЗА ---
-
 @dp.callback_query(F.data.startswith("cour_active_"))
 async def show_active_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[2])
@@ -390,10 +442,8 @@ async def courier_sos(callback: CallbackQuery):
         if order:
             res = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name = $1", order['restaurant_name'])
             target = res['admin_tg_id'] if res and res['admin_tg_id'] else MAIN_ADMIN_ID
-            
             cour = await conn.fetchrow("SELECT name FROM couriers WHERE tg_id = $1", callback.from_user.id)
             cour_name = cour['name'] if cour else "Неизвестный"
-            
             msg = f"🆘 <b>АЛЕРТ ОТ КУРЬЕРА!</b>\n\nКурьер <b>{cour_name}</b> (ID: <code>{callback.from_user.id}</code>) сообщил о проблеме с <b>Заказом №{order_id}</b>!\n\nСвяжитесь с ним: @{callback.from_user.username or callback.from_user.id}"
             
             try: await bot.send_message(target, msg, parse_mode="HTML")
@@ -401,7 +451,6 @@ async def courier_sos(callback: CallbackQuery):
             if target != MAIN_ADMIN_ID:
                 try: await bot.send_message(MAIN_ADMIN_ID, msg, parse_mode="HTML")
                 except: pass
-                
         await callback.answer("🚨 Сообщение отправлено ресторану и администратору!", show_alert=True)
     finally: await conn.close()
 
@@ -415,13 +464,11 @@ async def take_order(callback: CallbackQuery):
         if order['courier_tg_id']: return await callback.answer("Заказ уже занят другим курьером!", show_alert=True)
         
         await conn.execute("UPDATE orders SET courier_tg_id = $1, status = 'taken' WHERE id = $2", callback.from_user.id, order_id)
-        
         await notify_restaurant(conn, order_id, "Курьер принял заказ и едет в ресторан 🏃‍♂️")
         await notify_client(conn, order_id, "Мы нашли курьера! Он уже спешит в ресторан. 🏃‍♂️")
         
         items = json.loads(order['items'])
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
-        
         res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
         nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map" if res_coords and res_coords['lat'] else f"https://yandex.ru/maps/?text={order['restaurant_name']}"
         
@@ -440,7 +487,6 @@ async def picked_order(callback: CallbackQuery):
     try:
         await conn.execute("UPDATE orders SET status = 'delivering' WHERE id = $1", order_id)
         order = await conn.fetchrow("SELECT address, lat, lon FROM orders WHERE id = $1", order_id)
-        
         await notify_restaurant(conn, order_id, "Курьер забрал еду и выехал к клиенту 🚴‍♂️")
         await notify_client(conn, order_id, "Курьер забрал ваш заказ и уже в пути! 🚴‍♂️💨")
         
@@ -466,14 +512,12 @@ async def arrived_order(callback: CallbackQuery):
         await conn.execute("UPDATE orders SET status = 'arrived' WHERE id = $1", order_id)
         await notify_restaurant(conn, order_id, "Курьер прибыл к клиенту 📍")
         await notify_client(conn, order_id, "Курьер уже у ваших дверей! 📍")
-        
         order = await conn.fetchrow("SELECT phone, user_data FROM orders WHERE id = $1", order_id)
         u = json.loads(order['user_data'])
         client_id = u.get('id')
         
         kb_arr = []
-        if client_id:
-            kb_arr.append([InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={client_id}")])
+        if client_id: kb_arr.append([InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={client_id}")])
         kb_arr.append([InlineKeyboardButton(text="🏁 Доставлено", callback_data=f"done_{order_id}")])
         kb_arr.append([InlineKeyboardButton(text="🆘 Проблема с заказом", callback_data=f"sos_{order_id}")])
         
@@ -538,12 +582,9 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         paid = res.get('paid_until')
         is_paid = True if not paid else paid > datetime.now(timezone.utc)
         
-        if not is_paid:
-            status = "❌ Подписка истекла"
-        elif res.get('is_open'):
-            status = f"🟢 Открыто ({res.get('working_hours', '10:00-22:00')})"
-        else:
-            status = "🔴 ВРЕМЕННО ЗАКРЫТО"
+        if not is_paid: status = "❌ Подписка истекла"
+        elif res.get('is_open'): status = f"🟢 Открыто ({res.get('working_hours', '10:00-22:00')})"
+        else: status = "🔴 ВРЕМЕННО ЗАКРЫТО"
             
         paid_str = paid.strftime('%d.%m') if paid else "Безлимит"
         
@@ -551,13 +592,12 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
-            [InlineKeyboardButton(text="💳 Настройки оплаты", callback_data=f"adm_payment_{res['id']}")], # <--- ИЗМЕНЕНО ТУТ
+            [InlineKeyboardButton(text="💳 Настройки оплаты", callback_data=f"adm_payment_{res['id']}")],
             [InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}")]
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
 
-# --- МЕНЮ НАСТРОЕК ОПЛАТЫ ---
 @dp.callback_query(F.data.startswith("adm_payment_"))
 async def adm_payment_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
@@ -575,15 +615,11 @@ async def adm_payment_menu(callback: CallbackQuery):
             text += f"🔑 Secret Key: <code>{'Скрыт (Установлен)' if res.get('yookassa_secret_key') else 'Не указан'}</code>\n<i>Деньги будут поступать на ваш счет ЮKassa автоматически.</i>"
             
         kb = [[InlineKeyboardButton(text="🔄 Сменить метод оплаты", callback_data=f"adm_toggle_pay_{res['id']}")]]
-        
-        if method == 'manual':
-            kb.append([InlineKeyboardButton(text="💳 Изменить номер карты", callback_data=f"adm_card_{res['id']}")])
+        if method == 'manual': kb.append([InlineKeyboardButton(text="💳 Изменить номер карты", callback_data=f"adm_card_{res['id']}")])
         else:
             kb.append([InlineKeyboardButton(text="🛒 Ввести Shop ID", callback_data=f"adm_shopid_{res['id']}")])
             kb.append([InlineKeyboardButton(text="🔑 Ввести Secret Key", callback_data=f"adm_secret_{res['id']}")])
-            
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
-        
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
 
@@ -595,7 +631,6 @@ async def adm_toggle_pay(callback: CallbackQuery):
         res = await conn.fetchrow("SELECT payment_method FROM restaurants WHERE id = $1", res_id)
         new_method = 'yookassa' if (res.get('payment_method') or 'manual') == 'manual' else 'manual'
         await conn.execute("UPDATE restaurants SET payment_method = $1 WHERE id = $2", new_method, res_id)
-        
         callback.data = f"adm_payment_{res_id}"
         await adm_payment_menu(callback)
     finally: await conn.close()
@@ -632,7 +667,6 @@ async def process_secret(message: types.Message, state: FSMContext):
         await cmd_admin(message, state)
     finally: await conn.close()
 
-# --- ОСТАЛЬНЫЕ НАСТРОЙКИ АДМИНА ---
 @dp.callback_query(F.data.startswith("adm_toggle_open_"))
 async def adm_toggle_open(callback: CallbackQuery, state: FSMContext):
     res_id = int(callback.data.split("_")[3])
@@ -691,13 +725,11 @@ async def adm_new_desc(message: types.Message, state: FSMContext):
 async def adm_new_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     image_url = None
-    
     if message.photo:
         msg = await message.answer("⏳ Загружаю фото на сервер...")
         image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
         await msg.delete()
-    elif message.text and message.text != "-":
-        image_url = message.text
+    elif message.text and message.text != "-": image_url = message.text
         
     conn = await get_db_conn()
     try:
@@ -715,8 +747,7 @@ async def adm_show_menu(callback: CallbackQuery):
     try:
         products = await conn.fetch("SELECT id, name, is_active FROM products WHERE restaurant_id = $1 ORDER BY id DESC", res_id)
         kb = [[InlineKeyboardButton(text="➕ ДОБАВИТЬ БЛЮДО", callback_data=f"adm_add_new_{res_id}")]]
-        for p in products:
-            kb.append([InlineKeyboardButton(text=f"{'✅' if p['is_active'] else '🚫'} {p['name']}", callback_data=f"adm_p_{p['id']}")])
+        for p in products: kb.append([InlineKeyboardButton(text=f"{'✅' if p['is_active'] else '🚫'} {p['name']}", callback_data=f"adm_p_{p['id']}")])
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
         await callback.message.edit_text("Меню:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     finally: await conn.close(); await callback.answer()
@@ -728,14 +759,8 @@ async def admin_product_menu(callback: CallbackQuery):
     try:
         p = await conn.fetchrow("SELECT * FROM products WHERE id = $1", prod_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📝 Название", callback_data=f"adm_ename_{p['id']}"),
-                InlineKeyboardButton(text="📝 Описание", callback_data=f"adm_edesc_{p['id']}")
-            ],
-            [
-                InlineKeyboardButton(text="💵 Цена", callback_data=f"adm_price_{p['id']}"),
-                InlineKeyboardButton(text="🖼 Фото", callback_data=f"adm_ephoto_{p['id']}")
-            ],
+            [InlineKeyboardButton(text="📝 Название", callback_data=f"adm_ename_{p['id']}"), InlineKeyboardButton(text="📝 Описание", callback_data=f"adm_edesc_{p['id']}")],
+            [InlineKeyboardButton(text="💵 Цена", callback_data=f"adm_price_{p['id']}"), InlineKeyboardButton(text="🖼 Фото", callback_data=f"adm_ephoto_{p['id']}")],
             [InlineKeyboardButton(text="🚫 Стоп-лист" if p['is_active'] else "✅ В Меню", callback_data=f"adm_toggle_{p['id']}")],
             [InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"adm_menu_{p['restaurant_id']}")]
         ])
@@ -797,9 +822,7 @@ async def adm_edit_photo(message: types.Message, state: FSMContext):
         msg = await message.answer("⏳ Загружаю фото на сервер...")
         image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
         await msg.delete()
-    else:
-        image_url = message.text
-        
+    else: image_url = message.text
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE products SET image_url = $1 WHERE id = $2", image_url, data['prod_id'])
@@ -951,7 +974,6 @@ async def handle_decision(callback: CallbackQuery):
             
             items = json.loads(order_info['items'])
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
-            
             couriers = await conn.fetch("SELECT tg_id FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
             kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{order_id}")]])
             
@@ -970,6 +992,7 @@ async def handle_decision(callback: CallbackQuery):
 
 async def main():
     asyncio.create_task(order_checker())
+    asyncio.create_task(payment_processor()) # ЗАПУСК ПРОЦЕССОРА ЮKASSA
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
