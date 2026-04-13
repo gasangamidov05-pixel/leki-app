@@ -28,8 +28,16 @@ export default function Home() {
     if (savedCity) setSelectedCity(savedCity)
 
     async function fetchData() {
-      // 1. Получаем рестораны
-      const { data: resData } = await supabase.from('restaurants').select('*').eq('is_active', true)
+      // Получаем текущее время для проверки подписки
+      const now = new Date().toISOString();
+
+      // 1. Получаем ТОЛЬКО активные и оплаченные рестораны
+      const { data: resData } = await supabase
+        .from('restaurants')
+        .select('*')
+        .eq('is_active', true)
+        .gt('paid_until', now); // <-- Вот та самая проверка биллинга
+
       setRestaurants(resData || [])
       
       // 2. Вытягиваем список уникальных городов из ресторанов
@@ -151,7 +159,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ (Твоя оригинальная) */}
+        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
         {isOrdersOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col shadow-2xl">

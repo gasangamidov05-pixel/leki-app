@@ -7,7 +7,7 @@ import { useParams } from 'next/navigation'
 import Script from 'next/script'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
-const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197"; 
+const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -149,7 +149,6 @@ export default function RestaurantMenu() {
       const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
       const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
 
-      // Используем значения из базы ресторана или дефолтные
       const BASE = restaurant?.base_delivery_price || 150;
       const KM_PRICE = restaurant?.km_delivery_price || 22;
 
@@ -290,7 +289,7 @@ export default function RestaurantMenu() {
 
         <div className="grid gap-3">
           {filteredProducts.map((item) => (
-            <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false && 'opacity-50 grayscale'}`}>
+            <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
               <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
                 <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
               </div>
@@ -322,7 +321,7 @@ export default function RestaurantMenu() {
 
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto animate-slide-up">
+            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto">
               <div className="flex justify-between items-center mb-6">
                  <h2 className="text-2xl font-black">Ваш заказ</h2>
                  <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
@@ -344,7 +343,7 @@ export default function RestaurantMenu() {
 
         {isCheckoutOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto animate-slide-up pb-10 max-h-[90vh] overflow-y-auto">
+            <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 max-h-[90vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-black">Доставка</h2>
                 <button onClick={() => setIsCheckoutOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
@@ -411,7 +410,7 @@ export default function RestaurantMenu() {
 
         {isOrdersOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col">
+            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full pb-10 max-h-[85vh] flex flex-col">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-black">Мои заказы</h2>
                 <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
