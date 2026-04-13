@@ -14,7 +14,7 @@ TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
 MAIN_ADMIN_ID = 5340841151 
 
-# ❗️ ВАЖНО: ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE (те же, что на сайте)
+# ❗️ ВАЖНО: ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
 SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
 SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
@@ -100,11 +100,30 @@ async def cmd_superadmin(message: types.Message):
         "<b>💳 Биллинг (Подписки):</b>\n"
         "• <code>/set_paid res ID Дни</code> — Продлить ресторан\n"
         "• <code>/set_paid cour ID Дни</code> — Продлить курьера\n\n"
-        "<b>🌍 Логистика и Цены:</b>\n"
-        "• <code>/set_city_price Город База Км</code>\n"
-        "<i>Пример: /set_city_price Белиджи 100 20</i>"
+        "<b>🌍 Логистика и Маркетинг:</b>\n"
+        "• <code>/set_city_price Город База Км</code> — Изменить цены\n"
+        "• <code>/pin_res ID</code> — Закрепить/Открепить ресторан в ТОПе 🔥"
     )
     await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("pin_res"))
+async def admin_pin_res(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    if len(args) < 2: return await message.answer("Формат: /pin_res [ID_ресторана]")
+    
+    res_id = int(args[1])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name, is_pinned FROM restaurants WHERE id = $1", res_id)
+        if not res: return await message.answer("❌ Ресторан не найден!")
+        
+        new_status = not res['is_pinned']
+        await conn.execute("UPDATE restaurants SET is_pinned = $1 WHERE id = $2", new_status, res_id)
+        
+        status_text = "🔥 ЗАКРЕПЛЕН В ТОПЕ" if new_status else "🧊 Откреплен из топа"
+        await message.answer(f"✅ Ресторан <b>{res['name']}</b> теперь {status_text}!", parse_mode="HTML")
+    finally: await conn.close()
 
 @dp.message(Command("set_paid"))
 async def admin_set_paid(message: types.Message):
@@ -145,7 +164,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
-        [InlineKeyboardButton(text="🆘 Поддержка", url="https://t.me/gasangamidov")]
+        [InlineKeyboardButton(text="🆘 Поддержка", url="https://t.me/gasangamidov")] # <--- ЗАМЕНИ НА СВОЙ ЛОГИН (если нужно)
     ])
     await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\n\n🛠 Админ: /admin\n🛵 Курьер: /courier", reply_markup=kb)
 
