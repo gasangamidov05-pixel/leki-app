@@ -39,7 +39,8 @@ export default function Home() {
         }));
         setRestaurants(formattedRestaurants)
         
-        const cities = ['Все', ...new Set(formattedRestaurants.map(r => r.city).filter(Boolean))]
+        // ДОБАВИЛ ГЛОБУС ДЛЯ ПРОВЕРКИ КЭША
+        const cities = ['🌍 Все города', ...new Set(formattedRestaurants.map(r => r.city).filter(Boolean))]
         setAvailableCities(cities)
       }
       
@@ -50,7 +51,7 @@ export default function Home() {
 
   const selectCity = (city) => {
     setSelectedCity(city)
-    if (city === 'Все') {
+    if (city === '🌍 Все города' || city === 'Все') {
       localStorage.removeItem('user_city')
     } else {
       localStorage.setItem('user_city', city)
@@ -82,17 +83,22 @@ export default function Home() {
      }
   };
 
+  // ЖЕСТКАЯ ПРОВЕРКА НА ВЫБРАННЫЙ ГОРОД
+  const isSpecificCitySelected = selectedCity !== null && selectedCity !== '🌍 Все города' && selectedCity !== 'Все';
+
   // УМНАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА
   const processedRestaurants = restaurants
     .filter(r => {
-      const matchCity = !selectedCity || selectedCity === 'Все' || r.city === selectedCity;
+      const matchCity = !isSpecificCitySelected || r.city === selectedCity;
       const matchSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
       return matchCity && matchSearch;
     })
     .sort((a, b) => {
-      // 1. Спонсоры (Топ) всегда выше
-      if (a.is_pinned && !b.is_pinned) return -1;
-      if (!a.is_pinned && b.is_pinned) return 1;
+      // 1. Спонсоры (Топ) выше, ТОЛЬКО если выбран конкретный город
+      if (isSpecificCitySelected) {
+          if (a.is_pinned && !b.is_pinned) return -1;
+          if (!a.is_pinned && b.is_pinned) return 1;
+      }
 
       // 2. Открытые выше закрытых
       const aOpen = a.is_open && isRestaurantOpenByHours(a.working_hours);
@@ -181,14 +187,16 @@ export default function Home() {
           ) : processedRestaurants.length > 0 ? (
             processedRestaurants.map((restaurant) => {
               const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
+              // Показывать плашку ТОП только если выбран конкретный город
+              const showPin = isSpecificCitySelected && restaurant.is_pinned;
 
               return (
-                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${restaurant.is_pinned ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isOpenNow ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <h2 className="text-xl font-black">{restaurant.name}</h2>
-                        {restaurant.is_pinned && <span className="text-[10px] bg-gradient-to-r from-orange-400 to-red-500 text-white px-2 py-0.5 rounded-md font-black shadow-sm uppercase tracking-wider">🔥 Топ</span>}
+                        {showPin && <span className="text-[10px] bg-gradient-to-r from-orange-400 to-red-500 text-white px-2 py-0.5 rounded-md font-black shadow-sm uppercase tracking-wider">🔥 Топ</span>}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
@@ -222,8 +230,8 @@ export default function Home() {
           ) : (
             <div className="text-center py-10">
                <p className="text-gray-400 font-bold">Ничего не найдено.</p>
-               {selectedCity !== 'Все' && (
-                 <button onClick={() => selectCity('Все')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
+               {selectedCity !== '🌍 Все города' && selectedCity !== 'Все' && (
+                 <button onClick={() => selectCity('🌍 Все города')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
                )}
             </div>
           )}
