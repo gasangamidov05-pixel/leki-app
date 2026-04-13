@@ -63,6 +63,14 @@ async def upload_photo_to_supabase(file_id: str):
                         return f"{SUPABASE_URL}/storage/v1/object/public/receipts/{filename}"
     return None
 
+async def notify_restaurant(conn, order_id, status_msg):
+    order = await conn.fetchrow("SELECT restaurant_name FROM orders WHERE id = $1", order_id)
+    if order:
+        admin = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name = $1", order['restaurant_name'])
+        target = admin['admin_tg_id'] if admin else MAIN_ADMIN_ID
+        try: await bot.send_message(target, f"📦 <b>Заказ №{order_id}</b>\nСтатус: {status_msg}", parse_mode="HTML")
+        except: pass
+
 async def notify_client(conn, order_id, status_msg):
     order = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
     if order and order['user_data']:
@@ -408,13 +416,19 @@ async def show_active_order(callback: CallbackQuery):
         
         if order['status'] == 'taken':
             res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
-            nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map" if res_coords and res_coords['lat'] else f"https://yandex.ru/maps/?text={order['restaurant_name']}"
+            if res_coords and res_coords['lat']:
+                nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map"
+            else:
+                nav_url = f"https://yandex.ru/maps/?text={order['restaurant_name']}"
             kb_arr.append([InlineKeyboardButton(text="🗺 Маршрут в ресторан", url=nav_url)])
             kb_arr.append([InlineKeyboardButton(text="🏃‍♂️ Забрал заказ", callback_data=f"picked_{order_id}")])
             text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>Не забудьте получить {delivery_fee} ₽ за доставку в ресторане!</b>"
         elif order['status'] == 'delivering':
-            if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
-            else: nav_url = f"https://yandex.ru/maps/?text={order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')}"
+            if order['lat'] and order['lon']:
+                nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
+            else:
+                safe_addr = order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')
+                nav_url = f"https://yandex.ru/maps/?text={safe_addr}"
             kb_arr.append([InlineKeyboardButton(text="🗺 Маршрут к клиенту", url=nav_url)])
             kb_arr.append([InlineKeyboardButton(text="📍 Я на адресе", callback_data=f"arrived_{order_id}")])
             text = f"🚴‍♂️ <b>Заказ №{order_id} в пути!</b>\nАдрес: {order['address']}"
@@ -463,7 +477,10 @@ async def take_order(callback: CallbackQuery):
         items = json.loads(order['items'])
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
-        nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map" if res_coords and res_coords['lat'] else f"https://yandex.ru/maps/?text={order['restaurant_name']}"
+        if res_coords and res_coords['lat']:
+            nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map"
+        else:
+            nav_url = f"https://yandex.ru/maps/?text={order['restaurant_name']}"
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗺 Маршрут в ресторан", url=nav_url)],
@@ -483,8 +500,12 @@ async def picked_order(callback: CallbackQuery):
         await notify_restaurant(conn, order_id, "Курьер выехал к клиенту 🚴‍♂️")
         await notify_client(conn, order_id, "Курьер уже в пути! 🚴‍♂️💨")
         
-        if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
-        else: nav_url = f"https://yandex.ru/maps/?text={order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')}"
+        if order['lat'] and order['lon']:
+            nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
+        else:
+            safe_addr = order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')
+            nav_url = f"https://yandex.ru/maps/?text={safe_addr}"
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗺 Маршрут к клиенту", url=nav_url)],
             [InlineKeyboardButton(text="📍 Я на адресе", callback_data=f"arrived_{order_id}")]
@@ -568,7 +589,6 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             
         paid_str = paid.strftime('%d.%m') if paid else "Безлимит"
         
-        # ТУМБЛЕР СВОЕЙ ДОСТАВКИ
         can_sd = res.get('can_self_deliver') if res.get('can_self_deliver') is not None else True
         sd_text = "🟢 Вкл" if can_sd else "🔴 Выкл"
         
@@ -794,7 +814,7 @@ async def adm_new_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     image_url = None
     if message.photo:
-        msg = await message.answer("⏳ Загружаю фото на сервер...")
+        msg = await message.answer("⏳ Загружаю фото...")
         image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
         await msg.delete()
     elif message.text and message.text != "-": image_url = message.text
@@ -829,7 +849,7 @@ async def admin_product_menu(callback: CallbackQuery):
             [InlineKeyboardButton(text="📝 Название", callback_data=f"adm_ename_{p['id']}"), InlineKeyboardButton(text="📝 Описание", callback_data=f"adm_edesc_{p['id']}")],
             [InlineKeyboardButton(text="💵 Цена", callback_data=f"adm_price_{p['id']}"), InlineKeyboardButton(text="🖼 Фото", callback_data=f"adm_ephoto_{p['id']}")],
             [InlineKeyboardButton(text="🚫 Стоп-лист" if p['is_active'] else "✅ В Меню", callback_data=f"adm_toggle_{p['id']}")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data=f"adm_menu_{p['restaurant_id']}")]
+            [InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"adm_menu_{p['restaurant_id']}")]
         ])
         await callback.message.edit_text(f"🍔 <b>{p['name']}</b>\nЦена: {p['price']}₽", reply_markup=kb, parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
@@ -1060,9 +1080,11 @@ async def handle_decision(callback: CallbackQuery):
     data = callback.data.split("_")
     action, order_id, client_id = data[0], int(data[1]), int(data[2])
     conn = await get_db_conn()
+    
     if client_id == 0:
         o_info = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
         if o_info: client_id = json.loads(o_info['user_data']).get('id', 0)
+
     try:
         if action == "ok":
             prep_time = int(data[3])
@@ -1091,10 +1113,14 @@ async def handle_decision(callback: CallbackQuery):
         else:
             order = await conn.fetchrow("SELECT o.total_price, o.payment_id, o.receipt_url, o.phone, r.payment_method, r.yookassa_shop_id, r.yookassa_secret_key, r.support_link FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
+            
+            # ИСПРАВЛЕНО: Безопасная смена текста чека/сообщения
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
             caption += "\n\n🔴 ОТМЕНЕН"
-            if callback.message.photo: await callback.message.edit_caption(caption=caption)
-            else: await callback.message.edit_text(text=caption)
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=caption)
+            else:
+                await callback.message.edit_text(text=caption)
 
             if order:
                 support_kb = []
@@ -1117,8 +1143,8 @@ async def main():
     asyncio.create_task(order_checker())
     asyncio.create_task(stuck_order_checker())
     asyncio.create_task(payment_processor())
-    asyncio.create_task(courier_monitor()) # ЗАПУСК РАДАРА КУРЬЕРОВ
+    asyncio.create_task(courier_monitor())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main())м
