@@ -71,6 +71,7 @@ export default function RestaurantMenu() {
           let statusText = "обновлен 🔄";
           if (updatedOrder.status === 'accepted') statusText = "принят и начал готовиться! 🔥";
           if (updatedOrder.status === 'cancelled') statusText = "отменен заведением ❌";
+          if (updatedOrder.status === 'awaiting_payment') statusText = "ожидает оплаты 💳";
           if (window.Telegram?.WebApp?.initData) {
             window.Telegram.WebApp.showPopup({ title: `Заказ #${updatedOrder.id}`, message: `Статус: ${statusText}`, buttons: [{ type: "ok" }] });
           }
@@ -174,21 +175,30 @@ export default function RestaurantMenu() {
   };
 
   const sendOrder = async () => {
-    if (!receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
+    const isYookassa = restaurant?.payment_method === 'yookassa';
+
+    if (!isYookassa && !receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
     setIsUploading(true);
     try {
-      const fileExt = receiptFile.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from('receipts')
-        .upload(fileName, receiptFile);
+      let publicUrl = null;
 
-      if (uploadError) throw uploadError;
+      // Загружаем чек только если это ручная оплата
+      if (!isYookassa && receiptFile) {
+        const fileExt = receiptFile.name.split('.').pop();
+        const fileName = `${Math.random()}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage
+          .from('receipts')
+          .upload(fileName, receiptFile);
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('receipts')
-        .getPublicUrl(fileName);
+        if (uploadError) throw uploadError;
+
+        const { data: urlData } = supabase.storage
+          .from('receipts')
+          .getPublicUrl(fileName);
+        
+        publicUrl = urlData.publicUrl;
+      }
 
       let fullAddressStr = address;
       if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
@@ -201,7 +211,7 @@ export default function RestaurantMenu() {
         restaurant_name: restaurant?.name,
         items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
         total_price: totalSum + deliveryPrice,
-        status: 'new',
+        status: isYookassa ? 'awaiting_payment' : 'new', // Ставим статус ожидания для онлайна
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
         address: fullAddressStr,
@@ -239,6 +249,7 @@ export default function RestaurantMenu() {
 
   const getStatusBadge = (status) => {
     if (status === 'new') return <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-xl text-xs font-black uppercase">🕒 Ожидает</span>;
+    if (status === 'awaiting_payment') return <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-xl text-xs font-black uppercase">💳 Ждет оплату</span>;
     if (status === 'processing' || status === 'accepted') return <span className="bg-green-100 text-green-700 px-3 py-1 rounded-xl text-xs font-black uppercase">🔥 Готовится</span>;
     if (status === 'cancelled') return <span className="bg-red-100 text-red-700 px-3 py-1 rounded-xl text-xs font-black uppercase">❌ Отменен</span>;
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase">{status}</span>;
@@ -337,7 +348,6 @@ export default function RestaurantMenu() {
               <div className="space-y-4">
                 <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
                 
-                {/* ИЗМЕНЕННЫЙ БЛОК КАРТЫ */}
                 <div className="bg-blue-50 p-4 rounded-2xl border-2 border-blue-100 text-center mb-2">
                    <p className="text-sm font-bold text-blue-800 mb-2">Поставьте метку на дом, куда доставить заказ:</p>
                    <button onClick={getLocation} className="bg-white text-blue-600 font-black px-4 py-2 rounded-xl text-sm shadow-sm active:scale-95 transition-all">📍 Найти меня (GPS)</button>
@@ -347,7 +357,6 @@ export default function RestaurantMenu() {
                   <div id="map_container" className="w-full h-full bg-gray-100 flex items-center justify-center">
                     {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm animate-pulse">Загрузка карты...</span>}
                   </div>
-                  {/* Показываем адрес текстом ПОВЕРХ карты для удобства */}
                   {address && (
                       <div className="absolute bottom-2 left-2 right-2 bg-white/90 backdrop-blur-md p-2 rounded-xl border border-white/50 text-xs font-bold text-center shadow-lg line-clamp-2">
                           {address}
@@ -359,24 +368,31 @@ export default function RestaurantMenu() {
                   <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                   <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
-                {/* КОНЕЦ ИЗМЕНЕННОГО БЛОКА КАРТЫ */}
 
-                <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
-                  <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
-                    <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Оплата при получении'}</span>
-                    <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
+                {/* ЛОГИКА ОТОБРАЖЕНИЯ МЕТОДА ОПЛАТЫ */}
+                {restaurant?.payment_method === 'yookassa' ? (
+                  <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border-2 border-green-100 text-center">
+                    <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
+                    <p className="text-xs font-medium text-green-700">После оформления бот пришлет вам ссылку на безопасную оплату заказа.</p>
                   </div>
-                  <p className="text-xs font-bold text-gray-500">
-                    Переведите <span className="text-blue-600">{totalSum + deliveryPrice} ₽</span> и прикрепите чек:
-                  </p>
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    onChange={(e) => setReceiptFile(e.target.files[0])}
-                    className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
-                  />
-                </div>
+                ) : (
+                  <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
+                    <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
+                      <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Не указано'}</span>
+                      <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
+                    </div>
+                    <p className="text-xs font-bold text-gray-500">
+                      Переведите <span className="text-blue-600">{totalSum + deliveryPrice} ₽</span> и прикрепите чек:
+                    </p>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={(e) => setReceiptFile(e.target.files[0])}
+                      className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
+                    />
+                  </div>
+                )}
 
                 <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
                   {deliveryError ? (
@@ -391,10 +407,10 @@ export default function RestaurantMenu() {
 
                 <button 
                   onClick={sendOrder} 
-                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11 || !receiptFile || isUploading} 
-                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 && receiptFile && !isUploading ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11 || (!receiptFile && restaurant?.payment_method !== 'yookassa') || isUploading} 
+                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 && (receiptFile || restaurant?.payment_method === 'yookassa') && !isUploading ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
                 >
-                  {isUploading ? 'ОТПРАВЛЯЕМ...' : 'ПОДТВЕРДИТЬ'}
+                  {isUploading ? 'ОБРАБОТКА...' : (restaurant?.payment_method === 'yookassa' ? 'ПЕРЕЙТИ К ОПЛАТЕ' : 'ПОДТВЕРДИТЬ')}
                 </button>
               </div>
             </div>
