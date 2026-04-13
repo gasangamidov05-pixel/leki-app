@@ -40,7 +40,7 @@ class AdminStates(StatesGroup):
     waiting_for_edit_photo = State()
     waiting_for_yookassa_shop_id = State()
     waiting_for_yookassa_secret = State()
-    waiting_for_support_link = State() # НОВОЕ СОСТОЯНИЕ ДЛЯ ССЫЛКИ ПОДДЕРЖКИ
+    waiting_for_support_link = State()
 
 class CourierStates(StatesGroup):
     change_city = State()
@@ -165,18 +165,46 @@ async def cmd_superadmin(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     text = (
         "👑 <b>ПАНЕЛЬ СУПЕР-АДМИНА LEKI</b>\n\n"
-        "<b>📦 Управление курьерами:</b>\n"
-        "• <code>/add_courier ID Имя</code> — Нанять\n"
+        "<b>📦 Управление:</b>\n"
+        "• <code>/add_courier ID Имя</code> — Нанять курьера\n"
         "• <code>/del_courier ID</code> — Уволить\n"
-        "• <code>/courier_stats</code> — Рейтинг и заказы\n\n"
+        "• <code>/courier_stats</code> — Рейтинг курьеров\n\n"
         "<b>💳 Биллинг (Подписки):</b>\n"
         "• <code>/set_paid res ID Дни</code> — Продлить ресторан\n"
         "• <code>/set_paid cour ID Дни</code> — Продлить курьера\n\n"
-        "<b>🌍 Логистика и Маркетинг:</b>\n"
-        "• <code>/set_city_price Город База Км</code> — Изменить цены\n"
-        "• <code>/pin_res ID</code> — Закрепить/Открепить ресторан в ТОПе 🔥"
+        "<b>🌍 Инструменты платформы:</b>\n"
+        "• <code>/set_city_price Город База Км</code> — Цены доставки\n"
+        "• <code>/pin_res ID</code> — Закрепить ресторан в ТОП 🔥\n"
+        "• <code>/stats</code> — СТАТИСТИКА РЕСТОРАНОВ 📊"
     )
     await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def superadmin_stats(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    
+    conn = await get_db_conn()
+    try:
+        if len(args) < 2:
+            res_list = await conn.fetch("SELECT id, name, city FROM restaurants ORDER BY id")
+            text = "📊 <b>Система аналитики LEKI</b>\n\nЧтобы посмотреть статистику, отправьте команду с ID ресторана (например: <code>/stats 1</code>)\n\n<b>Список заведений:</b>\n"
+            for r in res_list:
+                text += f"ID: {r['id']} — <b>{r['name']}</b> ({r['city']})\n"
+            return await message.answer(text, parse_mode="HTML")
+            
+        res_id = int(args[1])
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
+        if not res: return await message.answer("❌ Ресторан не найден.")
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📅 За сегодня", callback_data=f"adm_statcalc_{res_id}_1")],
+            [InlineKeyboardButton(text="🗓 За 7 дней", callback_data=f"adm_statcalc_{res_id}_7")],
+            [InlineKeyboardButton(text="📆 За 30 дней", callback_data=f"adm_statcalc_{res_id}_30")],
+            [InlineKeyboardButton(text="♾ За всё время", callback_data=f"adm_statcalc_{res_id}_all")]
+        ])
+        await message.answer(f"📊 <b>Статистика: {res['name']}</b>\nВыберите период:", reply_markup=kb, parse_mode="HTML")
+    finally: await conn.close()
 
 @dp.message(Command("pin_res"))
 async def admin_pin_res(message: types.Message):
@@ -594,6 +622,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data=f"adm_stats_{res['id']}")],
             [InlineKeyboardButton(text="💳 Настройки оплаты", callback_data=f"adm_payment_{res['id']}")],
             [
                 InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}"),
@@ -602,6 +631,84 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
+
+# --- СТАТИСТИКА ---
+@dp.callback_query(F.data.startswith("adm_stats_"))
+async def adm_stats_menu(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[2])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📅 За сегодня", callback_data=f"adm_statcalc_{res_id}_1")],
+            [InlineKeyboardButton(text="🗓 За 7 дней", callback_data=f"adm_statcalc_{res_id}_7")],
+            [InlineKeyboardButton(text="📆 За 30 дней", callback_data=f"adm_statcalc_{res_id}_30")],
+            [InlineKeyboardButton(text="♾ За всё время", callback_data=f"adm_statcalc_{res_id}_all")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")]
+        ])
+        await callback.message.edit_text(f"📊 <b>Статистика: {res['name']}</b>\nВыберите период:", reply_markup=kb, parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_statcalc_"))
+async def adm_stat_calc(callback: CallbackQuery):
+    data = callback.data.split("_")
+    res_id = int(data[2])
+    period = data[3]
+    
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
+        if not res: return await callback.answer("Ошибка", show_alert=True)
+        res_name = res['name']
+        
+        date_filter = ""
+        period_text = "за всё время"
+        if period == "1":
+            date_filter = "AND DATE(created_at) = CURRENT_DATE"
+            period_text = "за сегодня"
+        elif period == "7":
+            date_filter = "AND created_at >= CURRENT_DATE - INTERVAL '7 days'"
+            period_text = "за 7 дней"
+        elif period == "30":
+            date_filter = "AND created_at >= CURRENT_DATE - INTERVAL '30 days'"
+            period_text = "за 30 дней"
+
+        query = f"""
+            SELECT 
+                COUNT(*) as total_orders,
+                COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_orders,
+                COUNT(*) FILTER (WHERE status = 'completed') as completed_orders,
+                SUM(total_price) FILTER (WHERE status = 'completed') as total_revenue,
+                COUNT(*) FILTER (WHERE payment_id IS NOT NULL) as online_payments,
+                COUNT(*) FILTER (WHERE payment_id IS NULL) as manual_payments
+            FROM orders 
+            WHERE restaurant_name = $1 AND status NOT IN ('new', 'awaiting_payment') {date_filter}
+        """
+        stats = await conn.fetchrow(query, res_name)
+        
+        total_o = stats['total_orders'] or 0
+        cancel_o = stats['cancelled_orders'] or 0
+        comp_o = stats['completed_orders'] or 0
+        rev = stats['total_revenue'] or 0
+        online_p = stats['online_payments'] or 0
+        manual_p = stats['manual_payments'] or 0
+        
+        text = (f"📊 <b>Статистика: {res_name}</b> ({period_text})\n\n"
+                f"📦 Всего заказов (в работе/завершено): <b>{total_o}</b>\n"
+                f"✅ Успешно доставлено: <b>{comp_o}</b>\n"
+                f"❌ Отменено: <b>{cancel_o}</b>\n\n"
+                f"💵 Выручка (с доставкой): <b>{rev} ₽</b>\n\n"
+                f"💳 Способы оплаты:\n"
+                f"▫️ Онлайн (ЮKassa): <b>{online_p}</b>\n"
+                f"▫️ Перевод (Чеки): <b>{manual_p}</b>")
+                
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к периодам", callback_data=f"adm_stats_{res_id}")],
+            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="adm_cancel")]
+        ])
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("adm_support_"))
 async def adm_support_start(callback: CallbackQuery, state: FSMContext):
@@ -982,7 +1089,6 @@ async def ask_prep_time(callback: CallbackQuery):
     ])
     await callback.message.edit_reply_markup(reply_markup=kb)
 
-# --- ЛОГИКА ОТМЕНЫ И ВОЗВРАТА СРЕДСТВ ---
 @dp.callback_query(F.data.startswith(("ok_", "no_")))
 async def handle_decision(callback: CallbackQuery):
     data = callback.data.split("_")
@@ -1019,13 +1125,10 @@ async def handle_decision(callback: CallbackQuery):
 
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
             
-            # ❗️ ИСПРАВЛЕНИЕ ТУТ: Правильно меняем текст сообщения с чеком
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
             caption += "\n\n🔴 ОТМЕНЕН"
-            if callback.message.photo:
-                await callback.message.edit_caption(caption=caption)
-            else:
-                await callback.message.edit_text(text=caption)
+            if callback.message.photo: await callback.message.edit_caption(caption=caption)
+            else: await callback.message.edit_text(text=caption)
 
             if order:
                 support_kb = []
@@ -1033,23 +1136,17 @@ async def handle_decision(callback: CallbackQuery):
                     support_kb.append([InlineKeyboardButton(text="📞 Написать в ресторан", url=order['support_link'])])
                 markup = InlineKeyboardMarkup(inline_keyboard=support_kb) if support_kb else None
 
-                # Авто-возврат ЮKassa
                 if order['payment_method'] == 'yookassa' and order['payment_id']:
                     refund_ok = await refund_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['payment_id'], order['total_price'])
                     if client_id:
-                        if refund_ok:
-                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n💸 <b>Деньги ({order['total_price']} ₽) автоматически возвращены</b> на вашу карту! (Зачисление занимает от пары минут до 3 дней).", parse_mode="HTML", reply_markup=markup)
-                        else:
-                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен.\n⚠️ Произошла ошибка при автоматическом возврате. Свяжитесь с администратором.", parse_mode="HTML", reply_markup=markup)
+                        if refund_ok: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n💸 <b>Деньги ({order['total_price']} ₽) автоматически возвращены</b> на вашу карту! (Зачисление занимает от пары минут до 3 дней).", parse_mode="HTML", reply_markup=markup)
+                        else: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен.\n⚠️ Произошла ошибка при автоматическом возврате. Свяжитесь с администратором.", parse_mode="HTML", reply_markup=markup)
                 
-                # Уведомление при ручном возврате
                 elif order['payment_method'] == 'manual' and order['receipt_url']:
-                    if client_id:
-                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n📞 Администратор свяжется с вами для возврата переведенных средств. Если этого не произошло, напишите им напрямую!", parse_mode="HTML", reply_markup=markup)
+                    if client_id: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n📞 Администратор свяжется с вами для возврата переведенных средств. Если этого не произошло, напишите им напрямую!", parse_mode="HTML", reply_markup=markup)
                     await callback.message.answer(f"⚠️ <b>ВНИМАНИЕ! Возврат средств.</b>\nВы отменили заказ №{order_id}, который был оплачен переводом.\n📞 <b>Свяжитесь с клиентом для возврата денег:</b> <code>{order['phone']}</code>\nСумма к возврату: <b>{order['total_price']} ₽</b>", parse_mode="HTML")
                 else:
-                    if client_id:
-                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.", reply_markup=markup)
+                    if client_id: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.", reply_markup=markup)
     finally: await conn.close(); await callback.answer()
 
 async def main():
