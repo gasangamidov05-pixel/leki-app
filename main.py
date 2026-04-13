@@ -1018,7 +1018,14 @@ async def handle_decision(callback: CallbackQuery):
             """, order_id)
 
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
-            await callback.message.edit_text(text="🔴 ОТМЕНЕН")
+            
+            # ❗️ ИСПРАВЛЕНИЕ ТУТ: Правильно меняем текст сообщения с чеком
+            caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
+            caption += "\n\n🔴 ОТМЕНЕН"
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=caption)
+            else:
+                await callback.message.edit_text(text=caption)
 
             if order:
                 support_kb = []
