@@ -35,11 +35,9 @@ class AdminStates(StatesGroup):
     waiting_for_new_desc = State()
     waiting_for_new_photo = State()
     waiting_for_hours = State()
-    
     waiting_for_edit_name = State()
     waiting_for_edit_desc = State()
     waiting_for_edit_photo = State()
-    
     waiting_for_yookassa_shop_id = State()
     waiting_for_yookassa_secret = State()
 
@@ -87,7 +85,6 @@ async def notify_client(conn, order_id, status_msg):
 async def create_yookassa_payment(shop_id, secret_key, amount, order_id, bot_link):
     url = "https://api.yookassa.ru/v3/payments"
     auth = aiohttp.BasicAuth(shop_id, secret_key)
-    # ❗️ ИСПРАВЛЕНО: Idempotence-Key (через 'e')
     headers = {"Idempotence-Key": str(uuid.uuid4())}
     payload = {
         "amount": {"value": f"{amount}.00", "currency": "RUB"},
@@ -108,49 +105,54 @@ async def check_yookassa_payment(shop_id, secret_key, payment_id):
             if resp.status == 200: return await resp.json()
     return None
 
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ ВОЗВРАТА СРЕДСТВ ---
+async def refund_yookassa_payment(shop_id, secret_key, payment_id, amount):
+    url = "https://api.yookassa.ru/v3/refunds"
+    auth = aiohttp.BasicAuth(shop_id, secret_key)
+    headers = {"Idempotence-Key": str(uuid.uuid4())}
+    payload = {
+        "payment_id": payment_id,
+        "amount": {"value": f"{amount}.00", "currency": "RUB"}
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, auth=auth, headers=headers, json=payload) as resp:
+            if resp.status == 200: return True
+    return False
+
 async def payment_processor():
     bot_info = await bot.get_me()
     bot_link = f"https://t.me/{bot_info.username}"
-    
     while True:
         conn = None
         try:
             conn = await get_db_conn()
-            
-            # 1. ИЩЕМ НОВЫЕ ЗАКАЗЫ ДЛЯ ВЫСТАВЛЕНИЯ СЧЕТА
             new_payments = await conn.fetch("SELECT o.*, r.yookassa_shop_id, r.yookassa_secret_key FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'awaiting_payment' LIMIT 5")
             for order in new_payments:
                 if not order['yookassa_shop_id'] or not order['yookassa_secret_key']:
                     await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order['id'])
                     await notify_client(conn, order['id'], "❌ Ошибка оплаты: Ресторан не настроил онлайн-кассу. Заказ отменен.")
                     continue
-                    
                 pay_data = await create_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['total_price'], order['id'], bot_link)
                 if pay_data and 'confirmation' in pay_data:
                     payment_id = pay_data['id']
                     pay_url = pay_data['confirmation']['confirmation_url']
-                    
                     await conn.execute("UPDATE orders SET status = 'payment_pending', payment_id = $1 WHERE id = $2", payment_id, order['id'])
-                    
                     u = json.loads(order['user_data'])
                     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ОПЛАТИТЬ ЗАКАЗ", url=pay_url)]])
                     try: await bot.send_message(u['id'], f"🧾 <b>Счет на оплату заказа №{order['id']}</b>\nСумма: {order['total_price']} ₽\n\n<i>Нажмите кнопку ниже, чтобы оплатить картой (ЮKassa). После успешной оплаты заказ автоматически отправится на кухню!</i>", reply_markup=kb, parse_mode="HTML")
                     except: pass
 
-            # 2. ПРОВЕРЯЕМ СТАТУС ВЫСТАВЛЕННЫХ СЧЕТОВ
             pending_payments = await conn.fetch("SELECT o.*, r.yookassa_shop_id, r.yookassa_secret_key FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'payment_pending' LIMIT 10")
             for order in pending_payments:
                 pay_info = await check_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['payment_id'])
                 if pay_info:
                     if pay_info['status'] == 'succeeded':
-                        # Переводим в статус 'new', чтобы радар заказов отправил его в ресторан!
                         await conn.execute("UPDATE orders SET status = 'new' WHERE id = $1", order['id'])
                         await notify_client(conn, order['id'], "✅ Оплата успешно получена! Ваш заказ передан в ресторан и начал готовиться.")
                     elif pay_info['status'] == 'canceled':
                         await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order['id'])
                         await notify_client(conn, order['id'], "❌ Время ожидания оплаты истекло, или оплата была отменена. Заказ аннулирован.")
-        except Exception as e:
-            pass
+        except: pass
         finally:
             if conn: await conn.close()
         await asyncio.sleep(5)
@@ -181,7 +183,6 @@ async def admin_pin_res(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     args = message.text.split()
     if len(args) < 2: return await message.answer("Формат: /pin_res [ID_ресторана]")
-    
     res_id = int(args[1])
     conn = await get_db_conn()
     try:
@@ -959,6 +960,7 @@ async def ask_prep_time(callback: CallbackQuery):
     ])
     await callback.message.edit_reply_markup(reply_markup=kb)
 
+# --- ЛОГИКА ОТМЕНЫ И ВОЗВРАТА СРЕДСТВ ---
 @dp.callback_query(F.data.startswith(("ok_", "no_")))
 async def handle_decision(callback: CallbackQuery):
     data = callback.data.split("_")
@@ -986,14 +988,39 @@ async def handle_decision(callback: CallbackQuery):
             caption += f"\n\n🟢 ПРИНЯТ (Готовность: к {ready_time})"
             if callback.message.photo: await callback.message.edit_caption(caption=caption)
             else: await callback.message.edit_text(text=caption)
-        else:
+            
+        else: # СЦЕНАРИЙ ОТМЕНЫ
+            order = await conn.fetchrow("""
+                SELECT o.total_price, o.payment_id, o.receipt_url, o.phone, r.payment_method, r.yookassa_shop_id, r.yookassa_secret_key
+                FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1
+            """, order_id)
+
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id)
             await callback.message.edit_text(text="🔴 ОТМЕНЕН")
+
+            if order:
+                # Авто-возврат ЮKassa
+                if order['payment_method'] == 'yookassa' and order['payment_id']:
+                    refund_ok = await refund_yookassa_payment(order['yookassa_shop_id'], order['yookassa_secret_key'], order['payment_id'], order['total_price'])
+                    if client_id:
+                        if refund_ok:
+                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n💸 <b>Деньги ({order['total_price']} ₽) автоматически возвращены</b> на вашу карту! (Зачисление занимает от пары минут до 3 дней).", parse_mode="HTML")
+                        else:
+                            await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен.\n⚠️ Произошла ошибка при автоматическом возврате. Администратор скоро свяжется с вами.", parse_mode="HTML")
+                
+                # Уведомление при ручном возврате (по чеку)
+                elif order['payment_method'] == 'manual' and order['receipt_url']:
+                    if client_id:
+                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.\n📞 Администратор свяжется с вами по номеру <code>{order['phone']}</code> для возврата переведенных средств.", parse_mode="HTML")
+                    await callback.message.answer(f"⚠️ <b>ВНИМАНИЕ! Возврат средств.</b>\nВы отменили заказ №{order_id}, который был оплачен переводом по чеку.\n📞 <b>Свяжитесь с клиентом для возврата денег:</b> <code>{order['phone']}</code>\nСумма к возврату: <b>{order['total_price']} ₽</b>", parse_mode="HTML")
+                else:
+                    if client_id:
+                        await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.")
     finally: await conn.close(); await callback.answer()
 
 async def main():
     asyncio.create_task(order_checker())
-    asyncio.create_task(payment_processor()) # ЗАПУСК ПРОЦЕССОРА ЮKASSA
+    asyncio.create_task(payment_processor())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
