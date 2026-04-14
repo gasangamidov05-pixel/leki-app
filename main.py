@@ -334,7 +334,6 @@ async def admin_set_paid(message: types.Message):
         await message.answer(f"✅ Доступ продлен до {new_date.strftime('%d.%m.%Y')}")
     finally: await conn.close()
 
-# --- ИЗМЕНЕННАЯ КОМАНДА /start ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -415,6 +414,7 @@ async def get_courier_panel_text(conn, tg_id):
         today_count = len(rows)
         for r in rows:
             items_data = json.loads(r['items'])
+            if isinstance(items_data, str): items_data = json.loads(items_data)
             items_sum = sum([i['price'] * i['count'] for i in items_data])
             today_earned += (r['total_price'] - items_sum)
     except: pass
@@ -540,6 +540,7 @@ async def show_active_order(callback: CallbackQuery):
         order = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
         if not order: return await callback.answer("Заказ не найден", show_alert=True)
         items = json.loads(order['items'])
+        if isinstance(items, str): items = json.loads(items)
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         kb_arr = []
         if order['status'] == 'taken':
@@ -599,6 +600,7 @@ async def take_order(callback: CallbackQuery):
         await notify_client(conn, order_id, "Мы нашли курьера! Он уже спешит в ресторан. 🏃‍♂️")
         
         items = json.loads(order['items'])
+        if isinstance(items, str): items = json.loads(items)
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
         
@@ -648,6 +650,7 @@ async def arrived_order(callback: CallbackQuery):
         await notify_client(conn, order_id, "Курьер уже у ваших дверей! 📍")
         order = await conn.fetchrow("SELECT phone, user_data FROM orders WHERE id = $1", order_id)
         u = json.loads(order['user_data'])
+        if isinstance(u, str): u = json.loads(u)
         client_id = u.get('id')
         kb_arr = []
         if client_id: kb_arr.append([InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={client_id}")])
@@ -675,6 +678,7 @@ async def done_order(callback: CallbackQuery):
         if order_data:
             res = await conn.fetchrow("SELECT id FROM restaurants WHERE name = $1", order_data['restaurant_name'])
             u = json.loads(order_data['user_data'])
+            if isinstance(u, str): u = json.loads(u)
             kb_res = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rres_{order_id}_{res['id']}_{i}") for i in range(1, 6)]])
             try: await bot.send_message(u['id'], f"😋 <b>Оцените блюда от {order_data['restaurant_name']}:</b>", reply_markup=kb_res, parse_mode="HTML")
             except: pass
@@ -1182,8 +1186,14 @@ async def order_checker():
                 if paid and paid < datetime.now(timezone.utc): continue
                 
                 target = res_info['admin_tg_id'] if res_info and res_info['admin_tg_id'] else MAIN_ADMIN_ID
+                
+                # --- ИСПРАВЛЕНИЕ ЗАЩИТЫ CLIENT ID ---
                 u = json.loads(order['user_data'])
+                if isinstance(u, str): u = json.loads(u)
+                client_id = u.get('id', 0) if u.get('id') else 0
+                
                 items = json.loads(order['items'])
+                if isinstance(items, str): items = json.loads(items)
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
                 city_name = res_info['city'] if res_info else '-'
                 
@@ -1194,12 +1204,17 @@ async def order_checker():
                 if active_couriers == 0: courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров!</b>\nБудьте готовы доставить этот заказ своими силами!"
                 else: courier_warning = f"🟢 Курьеров на линии: {active_couriers}"
                 
-                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Принять (Выбрать время)", callback_data=f"time_{order['id']}_{u.get('id')}")],
-                    [InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={u.get('id')}")],
-                    [InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{u.get('id')}")]
-                ])
+                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
+                
+                kb_buttons = [
+                    [InlineKeyboardButton(text="✅ Принять (Выбрать время)", callback_data=f"time_{order['id']}_{client_id}")]
+                ]
+                if client_id != 0:
+                    kb_buttons.append([InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={client_id}")])
+                kb_buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{client_id}")])
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+                
                 try:
                     if order['receipt_url']: await bot.send_photo(target, order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
                     else: await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
@@ -1243,17 +1258,14 @@ async def handle_self_delivery(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
     conn = await get_db_conn()
     try:
-        # --- ЗАЩИТА ОТ ДВОЙНОГО ПРИНЯТИЯ ЗАКАЗА ---
         order = await conn.fetchrow("SELECT courier_tg_id, address, phone, lat, lon, user_data FROM orders WHERE id = $1", order_id)
         if not order: 
             return await callback.answer("Заказ не найден!", show_alert=True)
             
         if order['courier_tg_id'] is not None:
-            # Если курьер уже успел забрать заказ, пока кнопка висела
             await callback.message.edit_text(f"✅ <b>Заказ №{order_id} уже перехвачен курьером платформы!</b>\nОтменять или везти самим не нужно.", parse_mode="HTML")
             return await callback.answer("Курьер уже забрал этот заказ!", show_alert=True)
             
-        # Если заказ все еще ничейный - отдаем ресторану
         await conn.execute("UPDATE orders SET courier_tg_id = -1, status = 'delivering' WHERE id = $1", order_id)
         
         u = json.loads(order['user_data'])
@@ -1271,34 +1283,57 @@ async def handle_self_delivery(callback: CallbackQuery):
         text = (f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n📍 Адрес: {order['address']}\n📞 Тел: <code>{order['phone']}</code>\n\n<i>Скопируйте этот текст и отправьте своему курьеру, или нажмите кнопку маршрута ниже.</i>")
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else: await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    finally: await conn.close(); await callback.answer()
+    finally: 
+        await conn.close()
+        await callback.answer()
 
+# --- ИСПРАВЛЕНИЕ: БЕЗОПАСНЫЙ СБОР ID ---
 @dp.callback_query(F.data.startswith("time_"))
 async def ask_prep_time(callback: CallbackQuery):
-    _, order_id, client_id = callback.data.split("_")
+    data = callback.data.split("_")
+    order_id = data[1]
+    client_id = data[2] if len(data) > 2 and data[2] != "None" else "0"
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="15 мин", callback_data=f"ok_{order_id}_{client_id}_15"), InlineKeyboardButton(text="30 мин", callback_data=f"ok_{order_id}_{client_id}_30")],
         [InlineKeyboardButton(text="45 мин", callback_data=f"ok_{order_id}_{client_id}_45"), InlineKeyboardButton(text="1 час", callback_data=f"ok_{order_id}_{client_id}_60")],
         [InlineKeyboardButton(text="1.5 часа", callback_data=f"ok_{order_id}_{client_id}_90"), InlineKeyboardButton(text="2 часа", callback_data=f"ok_{order_id}_{client_id}_120")]
     ])
     await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
 
-@dp.callback_query(F.data.startswith(("ok_", "no_")))
+@dp.callback_query(F.data.startswith("ok_") | F.data.startswith("no_"))
 async def handle_decision(callback: CallbackQuery):
     data = callback.data.split("_")
-    action, order_id, client_id = data[0], int(data[1]), int(data[2])
+    action = data[0]
+    order_id = int(data[1])
+    
+    client_id_str = data[2]
+    client_id = int(client_id_str) if client_id_str.isdigit() else 0
+    
     conn = await get_db_conn()
-    if client_id == 0:
-        o_info = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
-        if o_info: client_id = json.loads(o_info['user_data']).get('id', 0)
     try:
+        if client_id == 0:
+            o_info = await conn.fetchrow("SELECT user_data FROM orders WHERE id = $1", order_id)
+            if o_info and o_info['user_data']:
+                u_data = json.loads(o_info['user_data'])
+                if isinstance(u_data, str): u_data = json.loads(u_data)
+                client_id = int(u_data.get('id', 0))
+                
         if action == "ok":
             prep_time = int(data[3])
             ready_time = (datetime.now(MSK) + timedelta(minutes=prep_time)).strftime('%H:%M')
             await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
-            if client_id: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
+            
+            if client_id: 
+                try: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
+                except: pass
+                
             order_info = await conn.fetchrow("SELECT o.address, o.items, o.total_price, r.city, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
+            
             items = json.loads(order_info['items'])
+            if isinstance(items, str): items = json.loads(items)
+            
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
             
             all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
@@ -1308,8 +1343,7 @@ async def handle_decision(callback: CallbackQuery):
             
             for c in target_couriers:
                 prefix = "🚨 Новый заказ" if c['is_active'] else "🆘 ГОРЯЩИЙ ЗАКАЗ! На линии никого нет, выручай!"
-                hidden_address = "📍 [Скрыт до принятия заказа]"
-                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: {hidden_address}\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
+                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
@@ -1341,7 +1375,9 @@ async def handle_decision(callback: CallbackQuery):
                     await callback.message.answer(f"⚠️ <b>Возврат средств!</b>\nВы отменили заказ №{order_id}.\n📞 <b>Свяжитесь с клиентом:</b> <code>{order['phone']}</code>\nСумма: <b>{order['total_price']} ₽</b>", parse_mode="HTML")
                 else:
                     if client_id: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.", reply_markup=markup)
-    finally: await conn.close(); await callback.answer()
+    finally: 
+        await conn.close()
+        await callback.answer()
 
 
 # ==========================================
