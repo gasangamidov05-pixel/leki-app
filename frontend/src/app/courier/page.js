@@ -22,11 +22,18 @@ function getDeliveryFee(order) {
     } catch(e) { return 0; }
 }
 
+// Новая функция для подсчета количества позиций
+function getItemsCount(order) {
+    try {
+        const itemsArr = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+        return itemsArr.reduce((sum, item) => sum + item.count, 0);
+    } catch(e) { return 0; }
+}
+
 export default function CourierApp() {
   const [courier, setCourier] = useState(null)
   const [isAuthLoading, setIsAuthLoading] = useState(true)
   
-  // ТЕПЕРЬ МАССИВ ДЛЯ АКТИВНЫХ ЗАКАЗОВ (Лимит 2)
   const [activeOrders, setActiveOrders] = useState([])
   const [availableOrders, setAvailableOrders] = useState([])
   
@@ -65,12 +72,10 @@ export default function CourierApp() {
   const fetchAll = async () => {
     if (!courier) return;
 
-    // 1. АКТИВНЫЕ ЗАКАЗЫ (Массив)
     const { data: actives } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).in('status', ['taken', 'delivering', 'arrived']).order('id', { ascending: true });
     
     let enrichedActives = [];
     if (actives && actives.length > 0) {
-        // Подтягиваем координаты ресторанов для активных заказов
         const resNames = [...new Set(actives.map(o => o.restaurant_name))];
         const { data: resInfo } = await supabase.from('restaurants').select('name, lat, lon').in('name', resNames);
         
@@ -81,7 +86,6 @@ export default function CourierApp() {
     }
     setActiveOrders(enrichedActives);
 
-    // 2. РАДАР (Только если активных заказов меньше 2)
     if (enrichedActives.length < 2 && courier.is_active) {
       const { data: orders } = await supabase.from('orders').select('*').eq('status', 'accepted').is('courier_tg_id', null);
       const { data: restaurants } = await supabase.from('restaurants').select('*').eq('city', courier.city);
@@ -109,7 +113,6 @@ export default function CourierApp() {
       setAvailableOrders([]);
     }
 
-    // 3. СТАТИСТИКА
     if (currentTab === 'stats') {
         const { data: completed } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).eq('status', 'completed');
         if (completed) {
@@ -236,47 +239,64 @@ export default function CourierApp() {
         ) : (
             <div className="p-4 h-full flex flex-col space-y-6">
                 
-                {/* БЛОК АКТИВНЫХ ЗАКАЗОВ */}
+                {/* АКТИВНЫЕ ЗАКАЗЫ */}
                 {activeOrders.length > 0 && (
                     <div className="space-y-4">
                         <h2 className="font-black text-lg px-1 text-blue-700 flex items-center gap-2">В работе ({activeOrders.length}/2) 🛵</h2>
-                        {activeOrders.map((order, idx) => (
-                            <div key={order.id} className="bg-white rounded-[24px] p-5 shadow-lg border-2 border-blue-500 relative overflow-hidden">
-                                <div className="flex justify-between items-center mb-4 border-b border-gray-50 pb-3">
-                                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-xs font-black uppercase">ЗАКАЗ #{order.id}</span>
-                                    <div className="text-right">
-                                        <span className="text-xl font-black text-blue-600">{getDeliveryFee(order)} ₽</span>
-                                        <span className="block text-[9px] font-black text-gray-400 uppercase tracking-widest">ВЫПЛАТА</span>
-                                    </div>
-                                </div>
-                                <div className="space-y-4 mb-5">
-                                    <div className="relative pl-6 border-l-2 border-dashed border-gray-200 ml-1">
-                                        <div className="absolute -left-[9px] top-0 w-3 h-3 bg-gray-300 rounded-full border-2 border-white"></div>
-                                        <p className="text-[10px] font-black text-gray-400 uppercase mb-1">ЗАБРАТЬ:</p>
-                                        <p className="font-black text-md leading-tight mb-2">{order.restaurant_name}</p>
-                                        <button onClick={() => window.open(getRouteToRes(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
-                                    </div>
-                                    <div className="relative pl-6 border-l-2 border-transparent ml-1">
-                                        <div className="absolute -left-[9px] top-0 w-3 h-3 bg-blue-500 rounded-full border-2 border-white"></div>
-                                        <p className="text-[10px] font-black text-blue-400 uppercase mb-1">ОТВЕЗТИ:</p>
-                                        <p className="font-black text-md text-gray-900 leading-tight mb-2">{order.address}</p>
-                                        <div className="flex gap-2">
-                                            <button onClick={() => window.open(getRouteToClient(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
-                                            <a href={`tel:${order.phone}`} className="text-green-600 font-bold text-[10px] bg-green-50 px-3 py-1.5 rounded-lg">📞 ЗВОНОК</a>
+                        {activeOrders.map((order) => {
+                            const resToClientDist = (order.lat && order.lon && order.res_data?.lat && order.res_data?.lon) 
+                                ? getDistance(order.res_data.lat, order.res_data.lon, order.lat, order.lon) 
+                                : null;
+                            const itemsCount = getItemsCount(order);
+
+                            return (
+                                <div key={order.id} className="bg-white rounded-[24px] p-5 shadow-lg border-2 border-blue-500 relative overflow-hidden">
+                                    <div className="flex justify-between items-center mb-4 border-b border-gray-50 pb-3">
+                                        <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-xs font-black uppercase">ЗАКАЗ #{order.id}</span>
+                                        <div className="text-right">
+                                            <span className="text-xl font-black text-blue-600">{getDeliveryFee(order)} ₽</span>
+                                            <span className="block text-[9px] font-black text-gray-400 uppercase tracking-widest">ВЫПЛАТА</span>
                                         </div>
                                     </div>
+                                    <div className="space-y-4 mb-5">
+                                        <div className="relative pl-6 border-l-2 border-dashed border-gray-200 ml-1">
+                                            <div className="absolute -left-[9px] top-0 w-3 h-3 bg-gray-300 rounded-full border-2 border-white"></div>
+                                            <p className="text-[10px] font-black text-gray-400 uppercase mb-1">ЗАБРАТЬ:</p>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <p className="font-black text-md leading-tight">{order.restaurant_name}</p>
+                                                {order.ready_time && <span className="text-[10px] font-bold text-orange-500 bg-orange-50 px-2 py-1 rounded-md ml-2 text-center">🕒 К {order.ready_time}</span>}
+                                            </div>
+                                            <button onClick={() => window.open(getRouteToRes(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
+                                        </div>
+                                        <div className="relative pl-6 border-l-2 border-transparent ml-1">
+                                            <div className="absolute -left-[9px] top-0 w-3 h-3 bg-blue-500 rounded-full border-2 border-white"></div>
+                                            <p className="text-[10px] font-black text-blue-400 uppercase mb-1">ОТВЕЗТИ:</p>
+                                            <p className="font-black text-md text-gray-900 leading-tight mb-2">{order.address}</p>
+                                            
+                                            {/* Информация о маршруте и объеме */}
+                                            <div className="flex gap-2 mb-3">
+                                                {resToClientDist && <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">📍 ~{resToClientDist.toFixed(1)} км</span>}
+                                                <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-md">📦 {itemsCount} поз.</span>
+                                            </div>
+
+                                            <div className="flex gap-2">
+                                                <button onClick={() => window.open(getRouteToClient(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
+                                                <a href={`tel:${order.phone}`} className="text-green-600 font-bold text-[10px] bg-green-50 px-3 py-1.5 rounded-lg">📞 ЗВОНОК</a>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        {order.status === 'taken' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'delivering')} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>}
+                                        {order.status === 'delivering' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'arrived')} className="w-full bg-orange-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">📍 Я НА МЕСТЕ</button>}
+                                        {order.status === 'arrived' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'completed')} className="w-full bg-green-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏁 ВРУЧИЛ КЛИЕНТУ</button>}
+                                    </div>
                                 </div>
-                                <div>
-                                    {order.status === 'taken' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'delivering')} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>}
-                                    {order.status === 'delivering' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'arrived')} className="w-full bg-orange-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">📍 Я НА МЕСТЕ</button>}
-                                    {order.status === 'arrived' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'completed')} className="w-full bg-green-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏁 ВРУЧИЛ КЛИЕНТУ</button>}
-                                </div>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 )}
 
-                {/* БЛОК ДОСТУПНЫХ ЗАКАЗОВ (РАДАР) */}
+                {/* РАДАР */}
                 {activeOrders.length < 2 && (
                     <div className="flex-1 flex flex-col space-y-4">
                         <h2 className="font-black text-lg px-1 text-gray-800 flex items-center gap-2">Радар {locRef.current ? '🛰' : '📡'}</h2>
@@ -295,9 +315,8 @@ export default function CourierApp() {
                             <div className="space-y-4 pb-6">
                                 {availableOrders.map(order => {
                                      const deliveryFee = getDeliveryFee(order);
+                                     const itemsCount = getItemsCount(order);
                                      const distanceToRes = getDistance(locRef.current?.lat, locRef.current?.lon, order.res_data?.lat, order.res_data?.lon);
-                                     
-                                     // Вычисляем расстояние от ресторана до клиента, если есть координаты клиента
                                      const resToClientDist = (order.lat && order.lon && order.res_data?.lat && order.res_data?.lon) 
                                         ? getDistance(order.res_data.lat, order.res_data.lon, order.lat, order.lon) 
                                         : null;
@@ -307,7 +326,10 @@ export default function CourierApp() {
                                             <div className="flex justify-between items-start mb-4">
                                                 <div>
                                                     <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-1">ЗАБРАТЬ</span>
-                                                    <span className="font-black text-lg leading-none text-gray-800 block mb-1">{order.restaurant_name}</span>
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="font-black text-lg leading-none text-gray-800 block">{order.restaurant_name}</span>
+                                                        {order.ready_time && <span className="text-[10px] font-bold text-orange-500 bg-orange-50 px-2 py-0.5 rounded-md">🕒 К {order.ready_time}</span>}
+                                                    </div>
                                                     <span className="text-[10px] font-bold text-blue-500">📍 ~{distanceToRes ? distanceToRes.toFixed(1) : '?'} км от вас</span>
                                                 </div>
                                                 <div className="text-right bg-gray-50 p-2 rounded-xl border border-gray-100">
@@ -315,14 +337,16 @@ export default function CourierApp() {
                                                 </div>
                                             </div>
                                             
-                                            {/* НОВАЯ ИНФОРМАЦИЯ О КЛИЕНТЕ */}
                                             <div className="mb-4 bg-blue-50 p-3 rounded-xl border border-blue-100 flex items-center gap-3">
                                                 <span className="text-xl">🛵</span>
                                                 <div>
                                                     <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block mb-0.5">ОТВЕЗТИ КЛИЕНТУ</span>
-                                                    <span className="text-xs font-black text-blue-900">
-                                                        {resToClientDist ? `~${resToClientDist.toFixed(1)} км от ресторана` : order.address.substring(0, 30) + '...'}
-                                                    </span>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs font-black text-blue-900">
+                                                            {resToClientDist ? `~${resToClientDist.toFixed(1)} км маршрут` : 'Адрес скрыт'}
+                                                        </span>
+                                                        <span className="text-[10px] font-bold text-gray-500 bg-white/60 px-1.5 py-0.5 rounded-md">📦 {itemsCount} поз.</span>
+                                                    </div>
                                                 </div>
                                             </div>
 
@@ -335,7 +359,6 @@ export default function CourierApp() {
                     </div>
                 )}
                 
-                {/* ЗАГЛУШКА ЕСЛИ ЛИМИТ */}
                 {activeOrders.length >= 2 && (
                     <div className="bg-gray-200 rounded-[24px] p-6 text-center border-2 border-dashed border-gray-300">
                         <span className="text-3xl mb-2 block">🛑</span>
