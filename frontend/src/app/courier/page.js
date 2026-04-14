@@ -14,7 +14,6 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-// Функция для высчета чистой прибыли курьера
 function getDeliveryFee(order) {
     try {
         const itemsArr = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
@@ -33,7 +32,6 @@ export default function CourierApp() {
   const [gpsStatus, setGpsStatus] = useState('поиск...')
   const locRef = useRef(null);
 
-  // Вкладки: 'radar' или 'stats'
   const [currentTab, setCurrentTab] = useState('radar')
   const [stats, setStats] = useState({ todayEarned: 0, todayCount: 0, totalEarned: 0, totalCount: 0 })
 
@@ -64,11 +62,18 @@ export default function CourierApp() {
   const fetchAll = async () => {
     if (!courier) return;
 
-    // 1. АКТИВНЫЙ ЗАКАЗ (с подтягиванием координат ресторана для маршрута)
-    const { data: active } = await supabase.from('orders').select('*, restaurants!inner(lat, lon)').eq('courier_tg_id', courier.tg_id).in('status', ['taken', 'delivering', 'arrived']).maybeSingle();
-    setActiveOrder(active || null);
+    // --- ИСПРАВЛЕНИЕ: БЕЗОПАСНЫЙ ЗАПРОС АКТИВНОГО ЗАКАЗА ---
+    const { data: active } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).in('status', ['taken', 'delivering', 'arrived']).maybeSingle();
+    
+    if (active) {
+        // Подтягиваем координаты ресторана отдельно, чтобы не ломать запрос
+        const { data: resInfo } = await supabase.from('restaurants').select('lat, lon').eq('name', active.restaurant_name).maybeSingle();
+        setActiveOrder({ ...active, res_data: resInfo });
+    } else {
+        setActiveOrder(null);
+    }
 
-    // 2. РАДАР
+    // РАДАР
     if (!active && courier.is_active) {
       const { data: orders } = await supabase.from('orders').select('*').eq('status', 'accepted').is('courier_tg_id', null);
       const { data: restaurants } = await supabase.from('restaurants').select('*').eq('city', courier.city);
@@ -96,7 +101,7 @@ export default function CourierApp() {
       setAvailableOrders([]);
     }
 
-    // 3. СТАТИСТИКА
+    // СТАТИСТИКА
     if (currentTab === 'stats') {
         const { data: completed } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).eq('status', 'completed');
         if (completed) {
@@ -106,10 +111,7 @@ export default function CourierApp() {
             completed.forEach(o => {
                 const fee = getDeliveryFee(o);
                 allEarned += fee;
-                if (new Date(o.created_at).getTime() >= today) {
-                    tEarned += fee;
-                    tCount++;
-                }
+                if (new Date(o.created_at).getTime() >= today) { tEarned += fee; tCount++; }
             });
             setStats({ todayEarned: tEarned, todayCount: tCount, totalEarned: allEarned, totalCount: allCount });
         }
@@ -161,7 +163,11 @@ export default function CourierApp() {
     setIsActionLoading(true);
     await supabase.from('orders').update({ courier_tg_id: courier.tg_id, status: 'taken' }).eq('id', order.id);
     await notify(order, 'taken');
-    fetchAll();
+    
+    // Принудительно ставим локальный статус, чтобы интерфейс мгновенно перерисовался
+    setActiveOrder({ ...order, status: 'taken' });
+    
+    fetchAll(); // Запускаем синхронизацию
     setIsActionLoading(false);
   };
 
@@ -169,23 +175,25 @@ export default function CourierApp() {
     setIsActionLoading(true);
     await supabase.from('orders').update({ status }).eq('id', activeOrder.id);
     await notify(activeOrder, status);
+    
+    if (status === 'completed') setActiveOrder(null);
+    else setActiveOrder({...activeOrder, status});
+    
     fetchAll();
     setIsActionLoading(false);
   };
 
-  // Генераторы ссылок для Яндекс.Навигатора (строят маршрут от курьера до точки)
   const getRouteToRes = () => {
       const cLat = locRef.current?.lat || '';
       const cLon = locRef.current?.lon || '';
-      const rLat = activeOrder.restaurants?.lat || activeOrder.res_data?.lat || '';
-      const rLon = activeOrder.restaurants?.lon || activeOrder.res_data?.lon || '';
+      const rLat = activeOrder.res_data?.lat || '';
+      const rLon = activeOrder.res_data?.lon || '';
       return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~${rLat},${rLon}&rtt=auto`;
   }
   
   const getRouteToClient = () => {
       const cLat = locRef.current?.lat || '';
       const cLon = locRef.current?.lon || '';
-      // Если клиентских координат нет, роутим по адресу
       if (activeOrder.lat && activeOrder.lon) {
           return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~${activeOrder.lat},${activeOrder.lon}&rtt=auto`;
       } else {
@@ -193,29 +201,27 @@ export default function CourierApp() {
       }
   }
 
-  if (isAuthLoading) return <div className="min-h-screen bg-black flex items-center justify-center text-white">ЗАГРУЗКА...</div>;
-  if (!courier) return <div className="p-10 text-center font-bold">Доступ закрыт</div>;
+  if (isAuthLoading) return <div className="min-h-screen bg-black flex items-center justify-center text-white font-black tracking-tighter">LEKI PRO...</div>;
+  if (!courier) return <div className="p-10 text-center font-bold text-red-500">Доступ ограничен</div>;
 
   return (
-    <main className="min-h-screen bg-gray-100 flex flex-col fixed inset-0 pb-20">
+    <main className="min-h-screen bg-gray-100 flex flex-col fixed inset-0 font-sans pb-20">
       
       {/* HEADER */}
       <div className="bg-white p-5 shadow-sm z-20 flex justify-between items-center relative">
         <div>
-          <h1 className="font-black text-xl text-gray-900">LEKI <span className="text-blue-600">PRO</span></h1>
-          <p className="text-[10px] font-bold text-gray-400 uppercase">GPS: {gpsStatus} • {courier.city}</p>
+          <h1 className="font-black text-xl text-gray-900 leading-none">LEKI <span className="text-blue-600">PRO</span></h1>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">GPS: {gpsStatus} • {courier.city}</p>
         </div>
-        <button onClick={offlineTimer ? () => setOfflineTimer(null) : startToggleStatus} className={`px-5 py-2.5 rounded-xl font-black text-sm transition-all ${courier.is_active ? (offlineTimer ? 'bg-orange-500 text-white animate-pulse' : 'bg-green-500 text-white shadow-md') : 'bg-gray-200 text-gray-500'}`}>
+        <button onClick={offlineTimer ? () => setOfflineTimer(null) : startToggleStatus} className={`px-5 py-2.5 rounded-xl font-black text-sm transition-all shadow-md ${courier.is_active ? (offlineTimer ? 'bg-orange-500 text-white animate-pulse' : 'bg-green-500 text-white') : 'bg-gray-200 text-gray-500'}`}>
             {offlineTimer ? `ОТМЕНА (${offlineTimer}с)` : (courier.is_active ? '🟢 В СЕТИ' : '🔴 ОФФЛАЙН')}
         </button>
       </div>
 
-      {/* КОНТЕНТ ВКЛАДОК */}
       <div className="flex-1 overflow-y-auto">
         {currentTab === 'stats' ? (
             <div className="p-4 space-y-4">
                 <h2 className="font-black text-2xl px-2 text-gray-800">Статистика</h2>
-                
                 <div className="bg-blue-600 rounded-3xl p-6 text-white shadow-lg">
                     <p className="font-bold text-blue-200 text-sm uppercase mb-1">Заработано сегодня</p>
                     <p className="font-black text-4xl mb-4">{stats.todayEarned} ₽</p>
@@ -223,7 +229,6 @@ export default function CourierApp() {
                         <span className="font-bold text-sm">📦 Доставлено: {stats.todayCount}</span>
                     </div>
                 </div>
-
                 <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
                     <p className="font-bold text-gray-400 text-sm uppercase mb-1">За всё время</p>
                     <p className="font-black text-3xl text-gray-800 mb-4">{stats.totalEarned} ₽</p>
@@ -247,11 +252,11 @@ export default function CourierApp() {
                                     <div className="absolute -left-[31px] top-1 w-4 h-4 bg-gray-200 border-2 border-white rounded-full"></div>
                                     <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">ЗАБРАТЬ ИЗ:</p>
                                     <p className="font-black text-lg leading-tight mb-3">{activeOrder.restaurant_name}</p>
-                                    <button onClick={() => window.open(getRouteToRes(), '_blank')} className="text-blue-600 font-bold text-xs bg-blue-50 px-4 py-2 rounded-xl active:scale-95 shadow-sm">🗺 ПОСТРОИТЬ МАРШРУТ</button>
+                                    <button onClick={() => window.open(getRouteToRes(), '_blank')} className="text-blue-600 font-bold text-xs bg-blue-50 px-4 py-2 rounded-xl active:scale-95 shadow-sm">🗺 МАРШРУТ В РЕСТОРАН</button>
                                 </div>
                                 <div className="relative">
                                     <div className="absolute -left-[31px] top-1 w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-sm"></div>
-                                    <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">ОТВЕЗТИ:</p>
+                                    <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">ОТВЕЗТИ КЛИЕНТУ:</p>
                                     <p className="font-black text-lg text-gray-900 leading-tight mb-4">{activeOrder.address}</p>
                                     <div className="flex gap-2">
                                         <button onClick={() => window.open(getRouteToClient(), '_blank')} className="flex-1 text-blue-600 font-bold text-xs bg-blue-50 px-4 py-2.5 rounded-xl text-center active:scale-95 shadow-sm">🗺 МАРШРУТ</button>
@@ -311,24 +316,16 @@ export default function CourierApp() {
         )}
       </div>
 
-      {/* НИЖНЕЕ МЕНЮ (BOTTOM NAVIGATION) */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex justify-around p-2 pb-6 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-30">
-          <button 
-              onClick={() => setCurrentTab('radar')} 
-              className={`flex-1 py-3 mx-1 rounded-2xl flex flex-col items-center gap-1 transition-all ${currentTab === 'radar' ? 'bg-blue-50 text-blue-600' : 'text-gray-400'}`}
-          >
+          <button onClick={() => setCurrentTab('radar')} className={`flex-1 py-3 mx-1 rounded-2xl flex flex-col items-center gap-1 transition-all ${currentTab === 'radar' ? 'bg-blue-50 text-blue-600' : 'text-gray-400'}`}>
               <span className="text-xl leading-none">🛵</span>
               <span className="text-[10px] font-black uppercase tracking-widest">Заказы</span>
           </button>
-          <button 
-              onClick={() => setCurrentTab('stats')} 
-              className={`flex-1 py-3 mx-1 rounded-2xl flex flex-col items-center gap-1 transition-all ${currentTab === 'stats' ? 'bg-blue-50 text-blue-600' : 'text-gray-400'}`}
-          >
+          <button onClick={() => setCurrentTab('stats')} className={`flex-1 py-3 mx-1 rounded-2xl flex flex-col items-center gap-1 transition-all ${currentTab === 'stats' ? 'bg-blue-50 text-blue-600' : 'text-gray-400'}`}>
               <span className="text-xl leading-none">📊</span>
               <span className="text-[10px] font-black uppercase tracking-widest">Профиль</span>
           </button>
       </div>
-
     </main>
   )
 }
