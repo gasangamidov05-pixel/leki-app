@@ -25,8 +25,11 @@ function getDeliveryFee(order) {
 export default function CourierApp() {
   const [courier, setCourier] = useState(null)
   const [isAuthLoading, setIsAuthLoading] = useState(true)
-  const [activeOrder, setActiveOrder] = useState(null)
+  
+  // ТЕПЕРЬ МАССИВ ДЛЯ АКТИВНЫХ ЗАКАЗОВ (Лимит 2)
+  const [activeOrders, setActiveOrders] = useState([])
   const [availableOrders, setAvailableOrders] = useState([])
+  
   const [isActionLoading, setIsActionLoading] = useState(false)
   const [offlineTimer, setOfflineTimer] = useState(null)
   const [gpsStatus, setGpsStatus] = useState('поиск...')
@@ -62,19 +65,24 @@ export default function CourierApp() {
   const fetchAll = async () => {
     if (!courier) return;
 
-    // --- ИСПРАВЛЕНИЕ: БЕЗОПАСНЫЙ ЗАПРОС АКТИВНОГО ЗАКАЗА ---
-    const { data: active } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).in('status', ['taken', 'delivering', 'arrived']).maybeSingle();
+    // 1. АКТИВНЫЕ ЗАКАЗЫ (Массив)
+    const { data: actives } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).in('status', ['taken', 'delivering', 'arrived']).order('id', { ascending: true });
     
-    if (active) {
-        // Подтягиваем координаты ресторана отдельно, чтобы не ломать запрос
-        const { data: resInfo } = await supabase.from('restaurants').select('lat, lon').eq('name', active.restaurant_name).maybeSingle();
-        setActiveOrder({ ...active, res_data: resInfo });
-    } else {
-        setActiveOrder(null);
+    let enrichedActives = [];
+    if (actives && actives.length > 0) {
+        // Подтягиваем координаты ресторанов для активных заказов
+        const resNames = [...new Set(actives.map(o => o.restaurant_name))];
+        const { data: resInfo } = await supabase.from('restaurants').select('name, lat, lon').in('name', resNames);
+        
+        enrichedActives = actives.map(order => {
+            const rData = resInfo?.find(r => r.name === order.restaurant_name);
+            return { ...order, res_data: rData };
+        });
     }
+    setActiveOrders(enrichedActives);
 
-    // РАДАР
-    if (!active && courier.is_active) {
+    // 2. РАДАР (Только если активных заказов меньше 2)
+    if (enrichedActives.length < 2 && courier.is_active) {
       const { data: orders } = await supabase.from('orders').select('*').eq('status', 'accepted').is('courier_tg_id', null);
       const { data: restaurants } = await supabase.from('restaurants').select('*').eq('city', courier.city);
 
@@ -101,13 +109,12 @@ export default function CourierApp() {
       setAvailableOrders([]);
     }
 
-    // СТАТИСТИКА
+    // 3. СТАТИСТИКА
     if (currentTab === 'stats') {
         const { data: completed } = await supabase.from('orders').select('*').eq('courier_tg_id', courier.tg_id).eq('status', 'completed');
         if (completed) {
             const today = new Date().setHours(0,0,0,0);
             let tEarned = 0, tCount = 0, allEarned = 0, allCount = completed.length;
-            
             completed.forEach(o => {
                 const fee = getDeliveryFee(o);
                 allEarned += fee;
@@ -133,6 +140,10 @@ export default function CourierApp() {
 
   const startToggleStatus = async () => {
     if (courier.is_active) {
+      if (activeOrders.length > 0) {
+          alert("Сначала завершите текущие заказы!");
+          return;
+      }
       const { data } = await supabase.from('settings').select('value').eq('key', 'courier_buffer_sec').single();
       setOfflineTimer(data ? parseInt(data.value) : 60);
     } else { finishToggleStatus(true); }
@@ -153,77 +164,49 @@ export default function CourierApp() {
       if (clientMsg && uData?.id) await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: uData.id, message: `🛎 <b>Заказ №${order.id}</b>\n${clientMsg}` }) });
       
       if (type === 'completed' && uData?.id) {
-         const kb = { 
-             inline_keyboard: [[
-                 { text: "1 ⭐", callback_data: `rres_${order.id}_${res.id}_1` },
-                 { text: "2 ⭐", callback_data: `rres_${order.id}_${res.id}_2` },
-                 { text: "3 ⭐", callback_data: `rres_${order.id}_${res.id}_3` },
-                 { text: "4 ⭐", callback_data: `rres_${order.id}_${res.id}_4` },
-                 { text: "5 ⭐", callback_data: `rres_${order.id}_${res.id}_5` }
-             ]] 
-         };
-         await fetch('/api/notify', { 
-             method: 'POST', 
-             body: JSON.stringify({ 
-                 targetId: uData.id, 
-                 message: `😋 <b>Оцените блюда от ${order.restaurant_name}:</b>`, 
-                 reply_markup: kb 
-             }) 
-         });
+         const kb = { inline_keyboard: [[{ text: "1 ⭐", callback_data: `rres_${order.id}_${res.id}_1` }, { text: "2 ⭐", callback_data: `rres_${order.id}_${res.id}_2` }, { text: "3 ⭐", callback_data: `rres_${order.id}_${res.id}_3` }, { text: "4 ⭐", callback_data: `rres_${order.id}_${res.id}_4` }, { text: "5 ⭐", callback_data: `rres_${order.id}_${res.id}_5` }]] };
+         await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: uData.id, message: `😋 <b>Оцените блюда от ${order.restaurant_name}:</b>`, reply_markup: kb }) });
       }
     } catch(e) {}
   }
 
   const handleTake = async (order) => {
+    if (activeOrders.length >= 2) return alert("Максимум 2 заказа одновременно!");
     setIsActionLoading(true);
     await supabase.from('orders').update({ courier_tg_id: courier.tg_id, status: 'taken' }).eq('id', order.id);
     await notify(order, 'taken');
-    
-    // Принудительно ставим локальный статус, чтобы интерфейс мгновенно перерисовался
-    setActiveOrder({ ...order, status: 'taken' });
-    
-    fetchAll(); // Запускаем синхронизацию
-    setIsActionLoading(false);
-  };
-
-  const handleUpdate = async (status) => {
-    setIsActionLoading(true);
-    await supabase.from('orders').update({ status }).eq('id', activeOrder.id);
-    await notify(activeOrder, status);
-    
-    if (status === 'completed') setActiveOrder(null);
-    else setActiveOrder({...activeOrder, status});
-    
     fetchAll();
     setIsActionLoading(false);
   };
 
-  const getRouteToRes = () => {
-      const cLat = locRef.current?.lat || '';
-      const cLon = locRef.current?.lon || '';
-      const rLat = activeOrder.res_data?.lat || '';
-      const rLon = activeOrder.res_data?.lon || '';
+  const handleUpdate = async (order, status) => {
+    setIsActionLoading(true);
+    await supabase.from('orders').update({ status }).eq('id', order.id);
+    await notify(order, status);
+    fetchAll();
+    setIsActionLoading(false);
+  };
+
+  const getRouteToRes = (order) => {
+      const cLat = locRef.current?.lat || ''; const cLon = locRef.current?.lon || '';
+      const rLat = order.res_data?.lat || ''; const rLon = order.res_data?.lon || '';
       return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~${rLat},${rLon}&rtt=auto`;
   }
   
-  const getRouteToClient = () => {
-      const cLat = locRef.current?.lat || '';
-      const cLon = locRef.current?.lon || '';
-      if (activeOrder.lat && activeOrder.lon) {
-          return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~${activeOrder.lat},${activeOrder.lon}&rtt=auto`;
-      } else {
-          return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~&rtt=auto&text=${encodeURIComponent(activeOrder.address.split(',')[0])}`;
-      }
+  const getRouteToClient = (order) => {
+      const cLat = locRef.current?.lat || ''; const cLon = locRef.current?.lon || '';
+      if (order.lat && order.lon) return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~${order.lat},${order.lon}&rtt=auto`;
+      return `https://yandex.ru/maps/?rtext=${cLat},${cLon}~&rtt=auto&text=${encodeURIComponent(order.address.split(',')[0])}`;
   }
 
-  if (isAuthLoading) return <div className="min-h-screen bg-black flex items-center justify-center text-white font-black tracking-tighter">LEKI PRO...</div>;
-  if (!courier) return <div className="p-10 text-center font-bold text-red-500">Доступ ограничен</div>;
+  if (isAuthLoading) return <div className="min-h-screen bg-black flex items-center justify-center text-white">ЗАГРУЗКА...</div>;
+  if (!courier) return <div className="p-10 text-center font-bold">Доступ закрыт</div>;
 
   return (
     <main className="min-h-screen bg-gray-100 flex flex-col fixed inset-0 font-sans pb-20">
       
       {/* HEADER */}
-      <div className="bg-white p-5 shadow-sm z-20 flex justify-between items-center relative">
+      <div className="bg-white p-4 shadow-sm z-20 flex justify-between items-center relative">
         <div>
           <h1 className="font-black text-xl text-gray-900 leading-none">LEKI <span className="text-blue-600">PRO</span></h1>
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">GPS: {gpsStatus} • {courier.city}</p>
@@ -251,75 +234,99 @@ export default function CourierApp() {
                 </div>
             </div>
         ) : (
-            <div className="p-4 h-full">
-                {activeOrder ? (
-                    <div className="bg-white rounded-3xl p-6 shadow-md border border-gray-100 flex flex-col h-full relative overflow-hidden">
-                        <div className="flex justify-between items-center mb-6 border-b border-gray-50 pb-4">
-                            <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase">ЗАКАЗ #{activeOrder.id}</span>
-                            <div className="text-right">
-                                <span className="text-2xl font-black text-blue-600">{getDeliveryFee(activeOrder)} ₽</span>
-                                <span className="block text-[9px] font-black text-gray-400 uppercase tracking-widest mt-1">ОПЛАТА ВАМ</span>
-                            </div>
-                        </div>
-                        <div className="flex-1 space-y-6">
-                            <div className="relative pl-6 border-l-2 border-dashed border-gray-200 ml-2 space-y-8">
-                                <div className="relative">
-                                    <div className="absolute -left-[31px] top-1 w-4 h-4 bg-gray-200 border-2 border-white rounded-full"></div>
-                                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">ЗАБРАТЬ ИЗ:</p>
-                                    <p className="font-black text-lg leading-tight mb-3">{activeOrder.restaurant_name}</p>
-                                    <button onClick={() => window.open(getRouteToRes(), '_blank')} className="text-blue-600 font-bold text-xs bg-blue-50 px-4 py-2 rounded-xl active:scale-95 shadow-sm">🗺 МАРШРУТ В РЕСТОРАН</button>
-                                </div>
-                                <div className="relative">
-                                    <div className="absolute -left-[31px] top-1 w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-sm"></div>
-                                    <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">ОТВЕЗТИ КЛИЕНТУ:</p>
-                                    <p className="font-black text-lg text-gray-900 leading-tight mb-4">{activeOrder.address}</p>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => window.open(getRouteToClient(), '_blank')} className="flex-1 text-blue-600 font-bold text-xs bg-blue-50 px-4 py-2.5 rounded-xl text-center active:scale-95 shadow-sm">🗺 МАРШРУТ</button>
-                                        <a href={`tel:${activeOrder.phone}`} className="flex-1 text-green-600 font-bold text-xs bg-green-50 px-4 py-2.5 rounded-xl text-center active:scale-95 shadow-sm">📞 ПОЗВОНИТЬ</a>
+            <div className="p-4 h-full flex flex-col space-y-6">
+                
+                {/* БЛОК АКТИВНЫХ ЗАКАЗОВ */}
+                {activeOrders.length > 0 && (
+                    <div className="space-y-4">
+                        <h2 className="font-black text-lg px-1 text-blue-700 flex items-center gap-2">В работе ({activeOrders.length}/2) 🛵</h2>
+                        {activeOrders.map((order, idx) => (
+                            <div key={order.id} className="bg-white rounded-[24px] p-5 shadow-lg border-2 border-blue-500 relative overflow-hidden">
+                                <div className="flex justify-between items-center mb-4 border-b border-gray-50 pb-3">
+                                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-xs font-black uppercase">ЗАКАЗ #{order.id}</span>
+                                    <div className="text-right">
+                                        <span className="text-xl font-black text-blue-600">{getDeliveryFee(order)} ₽</span>
+                                        <span className="block text-[9px] font-black text-gray-400 uppercase tracking-widest">ВЫПЛАТА</span>
                                     </div>
                                 </div>
+                                <div className="space-y-4 mb-5">
+                                    <div className="relative pl-6 border-l-2 border-dashed border-gray-200 ml-1">
+                                        <div className="absolute -left-[9px] top-0 w-3 h-3 bg-gray-300 rounded-full border-2 border-white"></div>
+                                        <p className="text-[10px] font-black text-gray-400 uppercase mb-1">ЗАБРАТЬ:</p>
+                                        <p className="font-black text-md leading-tight mb-2">{order.restaurant_name}</p>
+                                        <button onClick={() => window.open(getRouteToRes(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
+                                    </div>
+                                    <div className="relative pl-6 border-l-2 border-transparent ml-1">
+                                        <div className="absolute -left-[9px] top-0 w-3 h-3 bg-blue-500 rounded-full border-2 border-white"></div>
+                                        <p className="text-[10px] font-black text-blue-400 uppercase mb-1">ОТВЕЗТИ:</p>
+                                        <p className="font-black text-md text-gray-900 leading-tight mb-2">{order.address}</p>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => window.open(getRouteToClient(order), '_blank')} className="text-blue-600 font-bold text-[10px] bg-blue-50 px-3 py-1.5 rounded-lg">🗺 МАРШРУТ</button>
+                                            <a href={`tel:${order.phone}`} className="text-green-600 font-bold text-[10px] bg-green-50 px-3 py-1.5 rounded-lg">📞 ЗВОНОК</a>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div>
+                                    {order.status === 'taken' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'delivering')} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>}
+                                    {order.status === 'delivering' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'arrived')} className="w-full bg-orange-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">📍 Я НА МЕСТЕ</button>}
+                                    {order.status === 'arrived' && <button disabled={isActionLoading} onClick={() => handleUpdate(order, 'completed')} className="w-full bg-green-500 text-white py-4 rounded-xl font-black text-sm active:scale-95 disabled:opacity-50">🏁 ВРУЧИЛ КЛИЕНТУ</button>}
+                                </div>
                             </div>
-                        </div>
-                        <div className="mt-8 pt-4">
-                            {activeOrder.status === 'taken' && <button disabled={isActionLoading} onClick={() => handleUpdate('delivering')} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-blue-200 shadow-xl active:scale-95 transition-all disabled:opacity-50">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>}
-                            {activeOrder.status === 'delivering' && <button disabled={isActionLoading} onClick={() => handleUpdate('arrived')} className="w-full bg-orange-500 text-white py-5 rounded-2xl font-black text-lg shadow-orange-200 shadow-xl active:scale-95 transition-all disabled:opacity-50">📍 Я НА МЕСТЕ</button>}
-                            {activeOrder.status === 'arrived' && <button disabled={isActionLoading} onClick={() => handleUpdate('completed')} className="w-full bg-green-500 text-white py-5 rounded-2xl font-black text-lg shadow-green-200 shadow-xl active:scale-95 transition-all disabled:opacity-50">🏁 ДОСТАВИЛ</button>}
-                        </div>
+                        ))}
                     </div>
-                ) : (
-                    <div className="h-full flex flex-col">
-                        <h2 className="font-black text-xl text-gray-800 mb-4 px-1 flex items-center gap-2">Радар {locRef.current ? '🛰' : '📡'}</h2>
+                )}
+
+                {/* БЛОК ДОСТУПНЫХ ЗАКАЗОВ (РАДАР) */}
+                {activeOrders.length < 2 && (
+                    <div className="flex-1 flex flex-col space-y-4">
+                        <h2 className="font-black text-lg px-1 text-gray-800 flex items-center gap-2">Радар {locRef.current ? '🛰' : '📡'}</h2>
+                        
                         {!courier.is_active ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-gray-400">
-                                <div className="w-20 h-20 bg-gray-200 rounded-full flex items-center justify-center text-4xl mb-4 opacity-50">☕</div>
-                                <h3 className="font-black text-xl text-gray-800 mb-2">Вы на перерыве</h3>
+                                <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center text-3xl mb-4 opacity-50">☕</div>
                                 <p className="font-medium text-sm">Выйдите на линию для получения заказов</p>
                             </div>
                         ) : availableOrders.length === 0 ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-gray-400">
-                                <div className="relative w-16 h-16 mb-4"><div className="absolute inset-0 bg-blue-400 rounded-full animate-ping opacity-20"></div><div className="absolute inset-2 bg-blue-500 rounded-full flex items-center justify-center shadow-lg"><span className="text-white text-xl">📡</span></div></div>
-                                <h3 className="font-black text-lg text-gray-800 mb-1">Поиск заказов...</h3>
+                                <div className="relative w-12 h-12 mb-4"><div className="absolute inset-0 bg-blue-400 rounded-full animate-ping opacity-20"></div><div className="absolute inset-2 bg-blue-500 rounded-full flex items-center justify-center shadow-lg"><span className="text-white text-md">📡</span></div></div>
+                                <p className="font-bold text-sm">Поиск заказов...</p>
                             </div>
                         ) : (
                             <div className="space-y-4 pb-6">
                                 {availableOrders.map(order => {
                                      const deliveryFee = getDeliveryFee(order);
-                                     const distance = getDistance(locRef.current?.lat, locRef.current?.lon, order.res_data.lat, order.res_data.lon);
+                                     const distanceToRes = getDistance(locRef.current?.lat, locRef.current?.lon, order.res_data?.lat, order.res_data?.lon);
+                                     
+                                     // Вычисляем расстояние от ресторана до клиента, если есть координаты клиента
+                                     const resToClientDist = (order.lat && order.lon && order.res_data?.lat && order.res_data?.lon) 
+                                        ? getDistance(order.res_data.lat, order.res_data.lon, order.lat, order.lon) 
+                                        : null;
+
                                      return (
-                                        <div key={order.id} className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 relative">
-                                            <div className="absolute top-0 left-0 w-1 h-full bg-blue-500 rounded-l-3xl"></div>
-                                            <div className="flex justify-between items-start mb-4 pl-2">
+                                        <div key={order.id} className="bg-white rounded-[24px] p-5 shadow-sm border border-gray-200 relative">
+                                            <div className="flex justify-between items-start mb-4">
                                                 <div>
-                                                    <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-1">ОТКУДА</span>
+                                                    <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-1">ЗАБРАТЬ</span>
                                                     <span className="font-black text-lg leading-none text-gray-800 block mb-1">{order.restaurant_name}</span>
-                                                    <span className="text-[11px] font-bold text-blue-500">📍 ~{distance ? distance.toFixed(1) : '?'} км</span>
+                                                    <span className="text-[10px] font-bold text-blue-500">📍 ~{distanceToRes ? distanceToRes.toFixed(1) : '?'} км от вас</span>
                                                 </div>
-                                                <div className="text-right bg-blue-50 p-2.5 rounded-xl border border-blue-100">
-                                                    <span className="font-black text-blue-700 block text-xl leading-none">{deliveryFee} ₽</span>
-                                                    <span className="text-[9px] text-blue-500 font-black uppercase tracking-widest mt-1 block">ВЫПЛАТА</span>
+                                                <div className="text-right bg-gray-50 p-2 rounded-xl border border-gray-100">
+                                                    <span className="font-black text-gray-800 block text-lg leading-none">+{deliveryFee} ₽</span>
                                                 </div>
                                             </div>
-                                            <button disabled={isActionLoading} onClick={() => handleTake(order)} className="w-full bg-gray-900 text-white py-4 rounded-xl font-black text-sm active:scale-95 transition-all shadow-md disabled:opacity-50">ВЗЯТЬ ЗАКАЗ</button>
+                                            
+                                            {/* НОВАЯ ИНФОРМАЦИЯ О КЛИЕНТЕ */}
+                                            <div className="mb-4 bg-blue-50 p-3 rounded-xl border border-blue-100 flex items-center gap-3">
+                                                <span className="text-xl">🛵</span>
+                                                <div>
+                                                    <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block mb-0.5">ОТВЕЗТИ КЛИЕНТУ</span>
+                                                    <span className="text-xs font-black text-blue-900">
+                                                        {resToClientDist ? `~${resToClientDist.toFixed(1)} км от ресторана` : order.address.substring(0, 30) + '...'}
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            <button disabled={isActionLoading} onClick={() => handleTake(order)} className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-black text-sm active:scale-95 transition-all shadow-md disabled:opacity-50">ВЗЯТЬ ЗАКАЗ</button>
                                         </div>
                                     )
                                 })}
@@ -327,6 +334,16 @@ export default function CourierApp() {
                         )}
                     </div>
                 )}
+                
+                {/* ЗАГЛУШКА ЕСЛИ ЛИМИТ */}
+                {activeOrders.length >= 2 && (
+                    <div className="bg-gray-200 rounded-[24px] p-6 text-center border-2 border-dashed border-gray-300">
+                        <span className="text-3xl mb-2 block">🛑</span>
+                        <h3 className="font-black text-gray-600">Достигнут лимит</h3>
+                        <p className="text-xs font-bold text-gray-400 mt-1">Доставьте хотя бы один заказ, чтобы радар снова заработал.</p>
+                    </div>
+                )}
+
             </div>
         )}
       </div>
