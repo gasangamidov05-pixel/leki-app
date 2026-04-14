@@ -464,6 +464,7 @@ async def cour_toggle_status(callback: CallbackQuery):
                 await conn.execute("UPDATE couriers SET is_active = false WHERE tg_id = $1", callback.from_user.id)
                 text, kb = await get_courier_panel_text(conn, callback.from_user.id)
                 await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
     finally: await conn.close()
 
 @dp.callback_query(F.data == "ignore")
@@ -957,7 +958,7 @@ async def adm_edit_name_start(callback: CallbackQuery, state: FSMContext):
     prod_id = int(callback.data.split("_")[2])
     await state.update_data(prod_id=prod_id)
     await state.set_state(AdminStates.waiting_for_edit_name)
-    await callback.message.answer("Новое название:")
+    await callback.message.answer("Введите новое название блюда:")
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_edit_name)
@@ -966,7 +967,7 @@ async def adm_edit_name(message: types.Message, state: FSMContext):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE products SET name = $1 WHERE id = $2", message.text, data['prod_id'])
-        await message.answer("✅ Обновлено!")
+        await message.answer("✅ Название обновлено!")
         await state.clear()
         await cmd_admin(message, state)
     finally: await conn.close()
@@ -976,7 +977,7 @@ async def adm_edit_desc_start(callback: CallbackQuery, state: FSMContext):
     prod_id = int(callback.data.split("_")[2])
     await state.update_data(prod_id=prod_id)
     await state.set_state(AdminStates.waiting_for_edit_desc)
-    await callback.message.answer("Новое описание (или '-'):")
+    await callback.message.answer("Введите новое описание блюда (или '-' чтобы очистить):")
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_edit_desc)
@@ -986,7 +987,7 @@ async def adm_edit_desc(message: types.Message, state: FSMContext):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE products SET description = $1 WHERE id = $2", desc, data['prod_id'])
-        await message.answer("✅ Обновлено!")
+        await message.answer("✅ Описание обновлено!")
         await state.clear()
         await cmd_admin(message, state)
     finally: await conn.close()
@@ -996,7 +997,7 @@ async def adm_edit_photo_start(callback: CallbackQuery, state: FSMContext):
     prod_id = int(callback.data.split("_")[2])
     await state.update_data(prod_id=prod_id)
     await state.set_state(AdminStates.waiting_for_edit_photo)
-    await callback.message.answer("Новое фото (или ссылку):")
+    await callback.message.answer("Отправьте новую фотографию блюда (или ссылку):")
     await callback.answer()
 
 @dp.message(AdminStates.waiting_for_edit_photo, F.photo | F.text)
@@ -1004,14 +1005,14 @@ async def adm_edit_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     image_url = None
     if message.photo:
-        msg = await message.answer("⏳ Загружаю фото...")
+        msg = await message.answer("⏳ Загружаю фото на сервер...")
         image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
         await msg.delete()
     else: image_url = message.text
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE products SET image_url = $1 WHERE id = $2", image_url, data['prod_id'])
-        await message.answer("✅ Обновлено!")
+        await message.answer("✅ Фотография обновлена!")
         await state.clear()
         await cmd_admin(message, state)
     finally: await conn.close()
@@ -1213,8 +1214,8 @@ async def handle_decision(callback: CallbackQuery):
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
             caption += f"\n\n🟢 ПРИНЯТ (Готовность: к {ready_time})"
-            if callback.message.photo: await callback.message.edit_caption(caption=caption)
-            else: await callback.message.edit_text(text=caption)
+            if callback.message.photo: await callback.message.edit_caption(caption=caption, parse_mode="HTML")
+            else: await callback.message.edit_text(text=caption, parse_mode="HTML")
             
         else:
             order = await conn.fetchrow("SELECT o.total_price, o.payment_id, o.receipt_url, o.phone, r.payment_method, r.yookassa_shop_id, r.yookassa_secret_key, r.support_link FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
@@ -1222,8 +1223,8 @@ async def handle_decision(callback: CallbackQuery):
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
             caption += "\n\n🔴 ОТМЕНЕН"
-            if callback.message.photo: await callback.message.edit_caption(caption=caption)
-            else: await callback.message.edit_text(text=caption)
+            if callback.message.photo: await callback.message.edit_caption(caption=caption, parse_mode="HTML")
+            else: await callback.message.edit_text(text=caption, parse_mode="HTML")
 
             if order:
                 support_kb = []
