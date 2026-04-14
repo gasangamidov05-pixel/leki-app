@@ -16,7 +16,7 @@ TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
 MAIN_ADMIN_ID = 5340841151 
 
-# ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
+# ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
 SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
 SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
@@ -556,6 +556,7 @@ async def show_active_order(callback: CallbackQuery):
         if isinstance(items, str): items = json.loads(items)
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
         kb_arr = []
+        text = ""
         if order['status'] == 'taken':
             res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
             if res_coords and res_coords['lat']: nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map"
@@ -571,14 +572,17 @@ async def show_active_order(callback: CallbackQuery):
             text = f"🚴‍♂️ <b>Заказ №{order_id} в пути!</b>\nАдрес: {order['address']}"
         elif order['status'] == 'arrived':
             u = json.loads(order['user_data'])
+            if isinstance(u, str): u = json.loads(u)
             if u.get('id'): kb_arr.append([InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={u.get('id')}")])
             kb_arr.append([InlineKeyboardButton(text="🏁 Доставлено", callback_data=f"done_{order_id}")])
             text = f"📍 <b>Заказ №{order_id}</b>\nВы на месте.\n📱 Тел: <code>{order['phone']}</code>"
         else: return await callback.answer("Этот заказ уже завершен или отменен.", show_alert=True)
             
         kb_arr.append([InlineKeyboardButton(text="🆘 Проблема с заказом", callback_data=f"sos_{order_id}")])
-        if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
-        else: await callback.message.edit_text(text=reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
+        if callback.message.photo: 
+            await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
+        else: 
+            await callback.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
         await callback.answer()
     finally: await conn.close()
 
@@ -1323,7 +1327,7 @@ async def handle_self_delivery(callback: CallbackQuery):
         ])
         text = (f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n📍 Адрес: {order['address']}\n📞 Тел: <code>{order['phone']}</code>\n\n<i>Скопируйте этот текст и отправьте своему курьеру, или нажмите кнопку маршрута ниже.</i>")
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else: await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        else: await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     finally: 
         await conn.close()
         await callback.answer()
@@ -1482,10 +1486,11 @@ async def render_active_orders(tg_id, page=0):
         
         for o in page_orders:
             status_emoji = "🆕" if o['status'] == 'new' else "👨‍🍳" if o['status'] == 'accepted' else "🛵"
-            text += f"{status_emoji} <b>Заказ №{o['id']}</b> | {o['total_price']}₽\n📍 {o['address'][:30]}...\n\n"
+            addr = o['address'] if o['address'] else "Адрес не указан"
+            addr_short = addr[:30] + "..." if len(addr) > 30 else addr
+            text += f"{status_emoji} <b>Заказ №{o['id']}</b> | {o['total_price']}₽\n📍 {addr_short}\n\n"
             kb_buttons.append([InlineKeyboardButton(text=f"{status_emoji} Управление заказом №{o['id']}", callback_data=f"resend_{o['id']}")])
         
-        # Добавляем кнопки перелистывания страниц
         nav_buttons = []
         if page > 0:
             nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"actpg_{page-1}"))
