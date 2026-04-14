@@ -17,6 +17,15 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
+// Помощник для безопасного чтения JSON добавок
+const parseMods = (modsRaw) => {
+    if (!modsRaw) return [];
+    if (typeof modsRaw === 'string') {
+        try { return JSON.parse(modsRaw); } catch(e) { return []; }
+    }
+    return Array.isArray(modsRaw) ? modsRaw : [];
+}
+
 export default function RestaurantMenu() {
   const params = useParams()
   const mapRef = useRef(null);
@@ -24,7 +33,11 @@ export default function RestaurantMenu() {
   
   const [restaurant, setRestaurant] = useState(null)
   const [products, setProducts] = useState([])
+  
+  // КОРЗИНА 2.0 (теперь хранит полные объекты с добавками)
   const [cart, setCart] = useState({})
+  const [selectedProduct, setSelectedProduct] = useState(null) // Блюдо, для которого открыто окно модификаторов
+  const [selectedMods, setSelectedMods] = useState([]) // Временный массив выбранных добавок в окне
   
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
@@ -65,7 +78,6 @@ export default function RestaurantMenu() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
         const updatedOrder = payload.new;
         const uData = typeof updatedOrder.user_data === 'string' ? JSON.parse(updatedOrder.user_data) : updatedOrder.user_data;
-        
         if ((tgUser && uData?.id === tgUser.id) || !tgUser) {
           setMyOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
           let statusText = "обновлен 🔄";
@@ -76,8 +88,7 @@ export default function RestaurantMenu() {
             window.Telegram.WebApp.showPopup({ title: `Заказ #${updatedOrder.id}`, message: `Статус: ${statusText}`, buttons: [{ type: "ok" }] });
           }
         }
-      })
-      .subscribe();
+      }).subscribe();
     return () => { supabase.removeChannel(channel) };
   }, []);
 
@@ -94,23 +105,15 @@ export default function RestaurantMenu() {
     if (!ymaps) return;
     ymaps.ready(() => {
       ymapsRef.current = ymaps;
-
-      const map = new ymaps.Map("map_container", {
-        center: [restaurant?.lat || 42.98, restaurant?.lon || 47.50],
-        zoom: 15,
-        controls: ['zoomControl']
-      });
-
+      const map = new ymaps.Map("map_container", { center: [restaurant?.lat || 42.98, restaurant?.lon || 47.50], zoom: 15, controls: ['zoomControl'] });
       const placemark = new ymaps.Placemark(map.getCenter(), {}, { preset: 'islands#blueFoodIcon', draggable: true });
       map.geoObjects.add(placemark);
-
       placemark.events.add('dragend', () => reverseGeocode(placemark.geometry.getCoordinates()));
       map.events.add('click', (e) => {
         const coords = e.get('coords');
         placemark.geometry.setCoordinates(coords);
         reverseGeocode(coords);
       });
-
       mapRef.current = { map, placemark };
     });
   };
@@ -119,33 +122,21 @@ export default function RestaurantMenu() {
     setIsCalculating(true);
     ymapsRef.current.geocode(coords).then((res) => {
       const firstGeoObject = res.geoObjects.get(0);
-      if (firstGeoObject) {
-        setAddress(firstGeoObject.getAddressLine());
-        updateDeliveryPrice(coords);
-      }
+      if (firstGeoObject) { setAddress(firstGeoObject.getAddressLine()); updateDeliveryPrice(coords); }
     });
   };
 
   const updateDeliveryPrice = (coords) => {
     if (!restaurant?.lat || !restaurant?.lon) return;
-
     setIsCalculating(true);
-
     const ymaps = window.ymaps;
     if (ymaps && ymaps.route) {
         ymaps.route([ [restaurant.lat, restaurant.lon], coords ], { routingMode: 'driving' }).then(
-            function (route) {
-                const distanceKm = route.getLength() / 1000;
-                calculatePriceLogic(distanceKm, "дорогам");
-            },
-            function (error) {
-                const distanceKm = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
-                calculatePriceLogic(distanceKm, "прямой");
-            }
+            function (route) { calculatePriceLogic(route.getLength() / 1000, "дорогам"); },
+            function (error) { calculatePriceLogic(getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]), "прямой"); }
         );
     } else {
-         const distanceKm = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
-         calculatePriceLogic(distanceKm, "прямой");
+         calculatePriceLogic(getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]), "прямой");
     }
   };
 
@@ -158,17 +149,12 @@ export default function RestaurantMenu() {
     const WEATHER = restaurant?.weather_bonus || 0;
 
     if (distance > MAX_DISTANCE) {
-        setDeliveryError(`Слишком далеко (${distance.toFixed(1)} км по ${method}). Доставляем до ${MAX_DISTANCE} км.`);
-        setDeliveryPrice(0);
-        setIsAddressValid(false);
+        setDeliveryError(`Слишком далеко (${distance.toFixed(1)} км). Доставляем до ${MAX_DISTANCE} км.`);
+        setDeliveryPrice(0); setIsAddressValid(false);
     } else {
         setDeliveryError(''); 
-        
-        const chargeableDistance = Math.max(0, distance - FREE_KM);
-        let rawPrice = BASE + (chargeableDistance * KM_PRICE);
-        rawPrice = rawPrice * SURGE;
-        rawPrice = rawPrice + WEATHER;
-
+        let rawPrice = BASE + (Math.max(0, distance - FREE_KM) * KM_PRICE);
+        rawPrice = (rawPrice * SURGE) + WEATHER;
         setDeliveryPrice(Math.round(rawPrice));
         setIsAddressValid(true);
     }
@@ -180,10 +166,7 @@ export default function RestaurantMenu() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const coords = [pos.coords.latitude, pos.coords.longitude];
-        if (mapRef.current) {
-          mapRef.current.map.setCenter(coords, 17);
-          mapRef.current.placemark.geometry.setCoordinates(coords);
-        }
+        if (mapRef.current) { mapRef.current.map.setCenter(coords, 17); mapRef.current.placemark.geometry.setCoordinates(coords); }
         reverseGeocode(coords);
       },
       () => { alert("Включите GPS в настройках телефона!"); setIsCalculating(false); }
@@ -202,29 +185,68 @@ export default function RestaurantMenu() {
     setPhone(formatted);
   };
 
+  // --- ЛОГИКА ДОБАВЛЕНИЯ В КОРЗИНУ С ДОБАВКАМИ ---
+  const getCartItemKey = (product, mods) => {
+    if (!mods || mods.length === 0) return String(product.id);
+    const modNames = mods.map(m => m.name).sort().join(',');
+    return `${product.id}|${modNames}`;
+  };
+
+  const handleAddToCartClick = (item) => {
+      const parsedMods = parseMods(item.modifiers);
+      if (parsedMods.length > 0) {
+          setSelectedProduct({ ...item, parsedMods });
+          setSelectedMods([]); // Сбрасываем выбранные
+      } else {
+          addToCart(item, []);
+      }
+  };
+
+  const addToCart = (item, mods = []) => {
+      const key = getCartItemKey(item, mods);
+      setCart(prev => {
+          const existing = prev[key];
+          if (existing) {
+              return { ...prev, [key]: { ...existing, count: existing.count + 1 } };
+          } else {
+              return { ...prev, [key]: { ...item, cartKey: key, count: 1, selectedMods: mods } };
+          }
+      });
+      setSelectedProduct(null); // Закрываем окно, если оно было открыто
+  };
+
+  const removeFromCart = (cartKey) => {
+      setCart(prev => {
+          const existing = prev[cartKey];
+          if (!existing) return prev;
+          if (existing.count > 1) {
+              return { ...prev, [cartKey]: { ...existing, count: existing.count - 1 } };
+          } else {
+              const newCart = { ...prev };
+              delete newCart[cartKey];
+              return newCart;
+          }
+      });
+  };
+
+  const getProductTotalCount = (id) => {
+      return Object.values(cart).filter(cItem => cItem.id === id).reduce((sum, cItem) => sum + cItem.count, 0);
+  };
+  // --------------------------------------------------
+
   const sendOrder = async () => {
     const isYookassa = restaurant?.payment_method === 'yookassa';
-
     if (!isYookassa && !receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
     setIsUploading(true);
     try {
       let publicUrl = null;
-
       if (!isYookassa && receiptFile) {
         const fileExt = receiptFile.name.split('.').pop();
         const fileName = `${Math.random()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from('receipts')
-          .upload(fileName, receiptFile);
-
+        const { error: uploadError } = await supabase.storage.from('receipts').upload(fileName, receiptFile);
         if (uploadError) throw uploadError;
-
-        const { data: urlData } = supabase.storage
-          .from('receipts')
-          .getPublicUrl(fileName);
-        
-        publicUrl = urlData.publicUrl;
+        publicUrl = supabase.storage.from('receipts').getPublicUrl(fileName).data.publicUrl;
       }
 
       let fullAddressStr = address;
@@ -234,9 +256,19 @@ export default function RestaurantMenu() {
 
       const coords = mapRef.current ? mapRef.current.placemark.geometry.getCoordinates() : null;
 
+      // ГЕНЕРИРУЕМ СПИСОК БЛЮД С ИХ ДОБАВКАМИ
+      const orderItems = Object.values(cart).map(item => {
+          let nameWithMods = item.name;
+          if (item.selectedMods && item.selectedMods.length > 0) {
+              nameWithMods += ` (${item.selectedMods.map(m => m.name).join(', ')})`;
+          }
+          const itemTotalPrice = item.price + (item.selectedMods?.reduce((s, m) => s + m.price, 0) || 0);
+          return { name: nameWithMods, count: item.count, price: itemTotalPrice };
+      });
+
       const orderData = {
         restaurant_name: restaurant?.name,
-        items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
+        items: orderItems,
         total_price: totalSum + deliveryPrice,
         status: isYookassa ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
@@ -248,17 +280,9 @@ export default function RestaurantMenu() {
       };
 
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
-      if (insertError) {
-        alert("Ошибка сохранения в базу: " + insertError.message);
-        setIsUploading(false);
-        return; 
-      }
-
+      if (insertError) { alert("Ошибка: " + insertError.message); setIsUploading(false); return; }
       window.Telegram?.WebApp?.close();
-    } catch (err) {
-      alert("Ошибка при отправке: " + err.message);
-      setIsUploading(false);
-    }
+    } catch (err) { alert("Ошибка: " + err.message); setIsUploading(false); }
   };
 
   const openMyOrders = async () => {
@@ -284,7 +308,12 @@ export default function RestaurantMenu() {
 
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
-  const totalSum = products.reduce((sum, item) => sum + (item.price * (cart[item.id] || 0)), 0);
+  
+  // ПЕРЕСЧЕТ ОБЩЕЙ СУММЫ С УЧЕТОМ ДОБАВОК
+  const totalSum = Object.values(cart).reduce((sum, item) => {
+      const itemModsPrice = item.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
+      return sum + ((item.price + itemModsPrice) * item.count);
+  }, 0);
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
@@ -311,30 +340,41 @@ export default function RestaurantMenu() {
         </div>
 
         <div className="grid gap-3">
-          {filteredProducts.map((item) => (
-            <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
-              <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
-                <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
-                {item.description && <p className="text-xs text-gray-500 mb-1 line-clamp-2">{item.description}</p>}
-                <p className="text-blue-600 font-black">{item.price} ₽</p>
-              </div>
-              <div className="flex items-center gap-2">
-                {item.is_active !== false ? (
-                  <>
-                    {cart[item.id] > 0 && <button onClick={() => {const c={...cart}; c[item.id]--; setCart(c)}} className="bg-gray-100 text-gray-600 w-9 h-9 rounded-xl font-bold">-</button>}
-                    {cart[item.id] > 0 && <span className="font-bold w-4 text-center">{cart[item.id]}</span>}
-                    <button onClick={() => setCart({...cart, [item.id]: (cart[item.id]||0)+1})} className="bg-blue-500 text-white w-9 h-9 rounded-xl font-bold shadow-sm">+</button>
-                  </>
-                ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
-              </div>
-            </div>
-          ))}
+          {filteredProducts.map((item) => {
+            const countInCart = getProductTotalCount(item.id);
+            const hasMods = parseMods(item.modifiers).length > 0;
+
+            return (
+                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
+                  <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
+                    <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
+                    {item.description && <p className="text-xs text-gray-500 mb-1 line-clamp-2">{item.description}</p>}
+                    <p className="text-blue-600 font-black">{item.price} ₽</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {item.is_active !== false ? (
+                        hasMods ? (
+                            <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-4 py-2 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
+                                {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБАВИТЬ'}
+                            </button>
+                        ) : (
+                            <>
+                                {countInCart > 0 && <button onClick={() => removeFromCart(String(item.id))} className="bg-gray-100 text-gray-600 w-9 h-9 rounded-xl font-bold active:scale-95">-</button>}
+                                {countInCart > 0 && <span className="font-bold w-4 text-center">{countInCart}</span>}
+                                <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white w-9 h-9 rounded-xl font-bold shadow-sm active:scale-95">+</button>
+                            </>
+                        )
+                    ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
+                  </div>
+                </div>
+            );
+          })}
         </div>
 
-        {totalSum > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && (
+        {totalSum > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
               <span>🛒 Корзина</span><span>{totalSum} ₽</span>
@@ -342,23 +382,79 @@ export default function RestaurantMenu() {
           </div>
         )}
 
+        {/* --- ОКНО ВЫБОРА ДОБАВОК --- */}
+        {selectedProduct && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+                <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 animate-slide-up">
+                    <div className="flex justify-between items-start mb-4">
+                        <div>
+                            <h2 className="text-2xl font-black">{selectedProduct.name}</h2>
+                            <p className="text-blue-600 font-black mt-1">{selectedProduct.price} ₽</p>
+                        </div>
+                        <button onClick={() => setSelectedProduct(null)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
+                    </div>
+                    {selectedProduct.description && <p className="text-sm text-gray-500 mb-6 bg-gray-50 p-3 rounded-xl">{selectedProduct.description}</p>}
+                    
+                    <div className="space-y-3 mb-8 max-h-[40vh] overflow-y-auto pr-2">
+                        <h3 className="font-black text-gray-800 uppercase tracking-wide text-sm mb-4">Добавки по желанию:</h3>
+                        {selectedProduct.parsedMods.map((mod, idx) => {
+                            const isSelected = selectedMods.some(m => m.name === mod.name);
+                            return (
+                                <div key={idx} onClick={() => {
+                                    if (isSelected) setSelectedMods(prev => prev.filter(m => m.name !== mod.name));
+                                    else setSelectedMods(prev => [...prev, mod]);
+                                }} className={`flex justify-between items-center p-4 rounded-2xl border-2 cursor-pointer transition-all active:scale-95 ${isSelected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-gray-100 bg-white hover:border-blue-200'}`}>
+                                    <span className="font-bold text-sm">{mod.name}</span>
+                                    <div className="flex items-center gap-3">
+                                        <span className="font-black text-blue-600">+{mod.price} ₽</span>
+                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center border-2 ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-200'}`}>
+                                            {isSelected && '✓'}
+                                        </div>
+                                    </div>
+                                </div>
+                            )
+                        })}
+                    </div>
+                    <button onClick={() => addToCart(selectedProduct, selectedMods)} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
+                        В корзину за {selectedProduct.price + selectedMods.reduce((s,m)=>s+m.price, 0)} ₽
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* --- ОБНОВЛЕННАЯ КОРЗИНА --- */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto">
+            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10">
               <div className="flex justify-between items-center mb-6">
                  <h2 className="text-2xl font-black">Ваш заказ</h2>
-                 <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
+                 <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
               </div>
-              <div className="space-y-4 mb-8 max-h-[40vh] overflow-y-auto">
-                {products.filter(p => cart[p.id] > 0).map(p => (
-                  <div key={p.id} className="flex justify-between items-center border-b border-gray-50 pb-3">
-                    <span className="font-bold">{p.name} <span className="text-gray-400 text-sm ml-1">x{cart[p.id]}</span></span>
-                    <span className="font-black text-blue-600">{p.price * cart[p.id]} ₽</span>
-                  </div>
-                ))}
+              <div className="space-y-6 mb-8 max-h-[45vh] overflow-y-auto pr-2">
+                {Object.values(cart).map(cItem => {
+                   const modsTotal = cItem.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
+                   return (
+                      <div key={cItem.cartKey} className="flex justify-between items-center border-b border-gray-50 pb-4">
+                        <div className="flex-1 pr-4">
+                            <span className="font-bold block text-sm">{cItem.name}</span>
+                            {cItem.selectedMods?.length > 0 && (
+                                <span className="text-xs text-gray-400 block mt-1 font-medium bg-gray-50 p-1.5 rounded-lg border border-gray-100">
+                                    {cItem.selectedMods.map(m => `+ ${m.name}`).join(', ')}
+                                </span>
+                            )}
+                            <span className="font-black text-blue-600 block mt-1">{(cItem.price + modsTotal)} ₽</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => removeFromCart(cItem.cartKey)} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">-</button>
+                            <span className="font-black w-3 text-center">{cItem.count}</span>
+                            <button onClick={() => addToCart(cItem, cItem.selectedMods)} className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">+</button>
+                        </div>
+                      </div>
+                   )
+                })}
               </div>
               <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
-                К оформлению
+                К оформлению ({totalSum} ₽)
               </button>
             </div>
           </div>
