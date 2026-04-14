@@ -1208,8 +1208,19 @@ async def handle_self_delivery(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
     conn = await get_db_conn()
     try:
+        # --- ЗАЩИТА ОТ ДВОЙНОГО ПРИНЯТИЯ ЗАКАЗА ---
+        order = await conn.fetchrow("SELECT courier_tg_id, address, phone, lat, lon, user_data FROM orders WHERE id = $1", order_id)
+        if not order: 
+            return await callback.answer("Заказ не найден!", show_alert=True)
+            
+        if order['courier_tg_id'] is not None:
+            # Если курьер уже успел забрать заказ, пока кнопка висела
+            await callback.message.edit_text(f"✅ <b>Заказ №{order_id} уже перехвачен курьером платформы!</b>\nОтменять или везти самим не нужно.", parse_mode="HTML")
+            return await callback.answer("Курьер уже забрал этот заказ!", show_alert=True)
+            
+        # Если заказ все еще ничейный - отдаем ресторану
         await conn.execute("UPDATE orders SET courier_tg_id = -1, status = 'delivering' WHERE id = $1", order_id)
-        order = await conn.fetchrow("SELECT address, phone, lat, lon, user_data FROM orders WHERE id = $1", order_id)
+        
         u = json.loads(order['user_data'])
         if u.get('id'):
             try: await bot.send_message(u['id'], f"🚗 <b>Ресторан взял доставку Заказа №{order_id} на себя!</b>\nОжидайте курьера от заведения.", parse_mode="HTML")
