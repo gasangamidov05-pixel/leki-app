@@ -482,7 +482,7 @@ async def show_active_order(callback: CallbackQuery):
             text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>Не забудьте получить {delivery_fee} ₽ за доставку в ресторане!</b>"
         elif order['status'] == 'delivering':
             if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
-            else: nav_url = f"https://yandex.ru/maps/?text={order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')}"
+            else: nav_url = "https://yandex.ru/maps/?text=" + order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')
             kb_arr.append([InlineKeyboardButton(text="🗺 Маршрут к клиенту", url=nav_url)])
             kb_arr.append([InlineKeyboardButton(text="📍 Я на адресе", callback_data=f"arrived_{order_id}")])
             text = f"🚴‍♂️ <b>Заказ №{order_id} в пути!</b>\nАдрес: {order['address']}"
@@ -552,7 +552,7 @@ async def picked_order(callback: CallbackQuery):
         await notify_client(conn, order_id, "Курьер уже в пути! 🚴‍♂️💨")
         
         if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
-        else: nav_url = f"https://yandex.ru/maps/?text={order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')}"
+        else: nav_url = "https://yandex.ru/maps/?text=" + order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗺 Маршрут к клиенту", url=nav_url)],
             [InlineKeyboardButton(text="📍 Я на адресе", callback_data=f"arrived_{order_id}")]
