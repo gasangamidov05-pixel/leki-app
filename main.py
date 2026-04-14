@@ -1185,6 +1185,8 @@ async def order_checker():
         conn = None
         try:
             conn = await get_db_conn()
+            
+            # 1. СНАЧАЛА ИЩЕМ НОВЫЕ ЗАКАЗЫ
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             for order in new_orders:
                 res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until FROM restaurants WHERE name = $1", order['restaurant_name'])
@@ -1221,11 +1223,27 @@ async def order_checker():
                 kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
                 
                 try:
+                    # Пытаемся отправить сообщение
                     if order['receipt_url']: await bot.send_photo(target, order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
                     else: await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
+                    
+                    # СТАВИМ ГАЛОЧКУ ТОЛЬКО ЕСЛИ ОТПРАВКА ПРОШЛА УСПЕШНО
+                    await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
+                except Exception as e:
+                    # Если Telegram сбоит, мы просто пропускаем этот заказ. В следующем цикле бот попробует снова!
+                    print(f"Ошибка отправки заказа {order['id']}: {e}")
+
+            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ ЗАБЫТЫХ ЗАКАЗОВ
+            # Ищем заказы, которые висят в статусе 'new' больше 3 минут, даже если они "уведомлены"
+            lost_orders = await conn.fetch("SELECT id, restaurant_name FROM orders WHERE status = 'new' AND created_at < NOW() - INTERVAL '3 minutes' AND superadmin_notified = false")
+            for lost in lost_orders:
+                try:
+                    await bot.send_message(MAIN_ADMIN_ID, f"🚨 <b>АВАРИЯ! Заказ №{lost['id']} ({lost['restaurant_name']}) висит без ответа уже более 3 минут!</b>\n\nСвяжитесь с рестораном или проверьте вкладку 'Текущие заказы'.", parse_mode="HTML")
+                    await conn.execute("UPDATE orders SET superadmin_notified = true WHERE id = $1", lost['id'])
                 except: pass
-                await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
-        except: pass
+
+        except Exception as e: 
+            print(f"Глобальная ошибка чекера: {e}")
         finally: 
             if conn: await conn.close()
         await asyncio.sleep(15)
