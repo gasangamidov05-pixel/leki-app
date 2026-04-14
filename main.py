@@ -16,8 +16,8 @@ DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-c
 MAIN_ADMIN_ID = 5340841151 
 
 # ❗️ ВАЖНО: ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
-SUPABASE_URL = "ТВОЙ_NEXT_PUBLIC_SUPABASE_URL"
-SUPABASE_KEY = "ТВОЙ_NEXT_PUBLIC_SUPABASE_ANON_KEY"
+SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
+SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
 # --- ЧАСОВОЙ ПОЯС (Дербент/Москва UTC+3) ---
 MSK = timezone(timedelta(hours=3))
