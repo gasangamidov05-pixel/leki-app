@@ -30,7 +30,7 @@ class AdminStates(StatesGroup):
     waiting_for_new_name = State(); waiting_for_new_price = State(); waiting_for_new_desc = State(); waiting_for_new_photo = State(); waiting_for_hours = State()
     waiting_for_edit_name = State(); waiting_for_edit_desc = State(); waiting_for_edit_photo = State()
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State()
-    waiting_for_modifier = State() # <--- НОВОЕ ДЛЯ ДОБАВОК
+    waiting_for_modifier = State()
 
 class CourierStates(StatesGroup): change_city = State()
 
@@ -127,7 +127,7 @@ async def payment_processor():
             if conn: await conn.close()
         await asyncio.sleep(5)
 
-# --- НОВЫЙ РАДАР КУРЬЕРОВ ---
+# --- РАДАР КУРЬЕРОВ ---
 async def courier_monitor():
     while True:
         conn = None
@@ -465,6 +465,7 @@ async def cour_toggle_status(callback: CallbackQuery):
                 await conn.execute("UPDATE couriers SET is_active = false WHERE tg_id = $1", callback.from_user.id)
                 text, kb = await get_courier_panel_text(conn, callback.from_user.id)
                 await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
     finally: await conn.close()
 
 @dp.callback_query(F.data == "ignore")
@@ -825,6 +826,52 @@ async def process_hours(message: types.Message, state: FSMContext):
         await cmd_admin(message, state)
     finally: await conn.close()
 
+@dp.callback_query(F.data.startswith("adm_add_new_"))
+async def adm_start_add(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_new_name)
+    await callback.message.answer("Название блюда:")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_new_name)
+async def adm_new_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Цена:")
+    await state.set_state(AdminStates.waiting_for_new_price)
+
+@dp.message(AdminStates.waiting_for_new_price)
+async def adm_new_price(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Только цифры!")
+    await state.update_data(price=int(message.text))
+    await message.answer("Описание (или введите '-', чтобы пропустить):")
+    await state.set_state(AdminStates.waiting_for_new_desc)
+
+@dp.message(AdminStates.waiting_for_new_desc)
+async def adm_new_desc(message: types.Message, state: FSMContext):
+    desc = "" if message.text == "-" else message.text
+    await state.update_data(desc=desc)
+    await message.answer("Отправьте фото блюда (или введите '-', чтобы оставить без фото):")
+    await state.set_state(AdminStates.waiting_for_new_photo)
+
+@dp.message(AdminStates.waiting_for_new_photo, F.photo | F.text)
+async def adm_new_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    image_url = None
+    if message.photo:
+        msg = await message.answer("⏳ Загружаю фото на сервер...")
+        image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
+        await msg.delete()
+    elif message.text and message.text != "-": image_url = message.text
+    conn = await get_db_conn()
+    try:
+        await conn.execute("INSERT INTO products (restaurant_id, name, price, description, image_url, is_active) VALUES ($1, $2, $3, $4, $5, true)", 
+                           data['res_id'], data['name'], data['price'], data['desc'], image_url)
+        await message.answer("✅ Блюдо успешно добавлено!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
 @dp.callback_query(F.data.startswith("adm_menu_"))
 async def adm_show_menu(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[2])
@@ -898,52 +945,6 @@ async def adm_mod_clear(callback: CallbackQuery):
         await conn.execute("UPDATE products SET modifiers = '[]'::jsonb WHERE id = $1", prod_id)
         callback.data = f"adm_p_{prod_id}"
         await admin_product_menu(callback)
-    finally: await conn.close()
-
-@dp.callback_query(F.data.startswith("adm_add_new_"))
-async def adm_start_add(callback: CallbackQuery, state: FSMContext):
-    res_id = int(callback.data.split("_")[3])
-    await state.update_data(res_id=res_id)
-    await state.set_state(AdminStates.waiting_for_new_name)
-    await callback.message.answer("Название блюда:")
-    await callback.answer()
-
-@dp.message(AdminStates.waiting_for_new_name)
-async def adm_new_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Цена:")
-    await state.set_state(AdminStates.waiting_for_new_price)
-
-@dp.message(AdminStates.waiting_for_new_price)
-async def adm_new_price(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("Только цифры!")
-    await state.update_data(price=int(message.text))
-    await message.answer("Описание (или введите '-', чтобы пропустить):")
-    await state.set_state(AdminStates.waiting_for_new_desc)
-
-@dp.message(AdminStates.waiting_for_new_desc)
-async def adm_new_desc(message: types.Message, state: FSMContext):
-    desc = "" if message.text == "-" else message.text
-    await state.update_data(desc=desc)
-    await message.answer("Отправьте фото блюда (или введите '-', чтобы оставить без фото):")
-    await state.set_state(AdminStates.waiting_for_new_photo)
-
-@dp.message(AdminStates.waiting_for_new_photo, F.photo | F.text)
-async def adm_new_photo(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    image_url = None
-    if message.photo:
-        msg = await message.answer("⏳ Загружаю фото на сервер...")
-        image_url = await upload_photo_to_supabase(message.photo[-1].file_id)
-        await msg.delete()
-    elif message.text and message.text != "-": image_url = message.text
-    conn = await get_db_conn()
-    try:
-        await conn.execute("INSERT INTO products (restaurant_id, name, price, description, image_url, is_active) VALUES ($1, $2, $3, $4, $5, true)", 
-                           data['res_id'], data['name'], data['price'], data['desc'], image_url)
-        await message.answer("✅ Блюдо успешно добавлено!")
-        await state.clear()
-        await cmd_admin(message, state)
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_ename_"))
@@ -1102,7 +1103,12 @@ async def order_checker():
                 delivery_fee = order['total_price'] - items_sum
                 
                 active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", city_name)
-                courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров!</b>" if active_couriers == 0 else f"🟢 Курьеров на линии: {active_couriers}"
+                
+                # --- ⚠️ НОВОЕ ПРЕДУПРЕЖДЕНИЕ О НЕХВАТКЕ КУРЬЕРОВ ---
+                if active_couriers == 0:
+                    courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров!</b>\nБудьте готовы доставить этот заказ своими силами!"
+                else:
+                    courier_warning = f"🟢 Курьеров на линии: {active_couriers}"
                 
                 text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
                 kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1148,13 +1154,27 @@ async def handle_self_delivery(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE orders SET courier_tg_id = -1, status = 'delivering' WHERE id = $1", order_id)
-        order = await conn.fetchrow("SELECT address, phone, user_data FROM orders WHERE id = $1", order_id)
+        order = await conn.fetchrow("SELECT address, phone, lat, lon, user_data FROM orders WHERE id = $1", order_id)
         u = json.loads(order['user_data'])
         if u.get('id'):
             try: await bot.send_message(u['id'], f"🚗 <b>Ресторан взял доставку Заказа №{order_id} на себя!</b>\nОжидайте курьера от заведения.", parse_mode="HTML")
             except: pass
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏁 Заказ доставлен клиенту", callback_data=f"done_{order_id}")]])
-        await callback.message.edit_text(f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n📍 Адрес: {order['address']}\n📞 Тел: <code>{order['phone']}</code>", reply_markup=kb, parse_mode="HTML")
+            
+        # --- 🗺 КНОПКА МАРШРУТА ДЛЯ СВОЕЙ ДОСТАВКИ ---
+        if order['lat'] and order['lon']: nav_url = "https://yandex.ru/maps/?pt=" + str(order['lon']) + "," + str(order['lat']) + "&z=18&l=map"
+        else: nav_url = "https://yandex.ru/maps/?text=" + order['address'].split(', кв/офис')[0].replace(' ', '+').replace('\n', '+')
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗺 Открыть маршрут", url=nav_url)],
+            [InlineKeyboardButton(text="🏁 Заказ доставлен клиенту", callback_data=f"done_{order_id}")]
+        ])
+        
+        text = (f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n"
+                f"📍 Адрес: {order['address']}\n"
+                f"📞 Тел: <code>{order['phone']}</code>\n\n"
+                f"<i>Скопируйте этот текст и отправьте своему курьеру, или нажмите кнопку маршрута ниже.</i>")
+                
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
 
 @dp.callback_query(F.data.startswith("time_"))
