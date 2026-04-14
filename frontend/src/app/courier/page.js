@@ -23,20 +23,14 @@ export default function CourierApp() {
   
   const [location, setLocation] = useState(null)
   const [isMapLoaded, setIsMapLoaded] = useState(false)
+  const [isActionLoading, setIsActionLoading] = useState(false)
 
-  // 1. Авторизация курьера
+  // --- 1. АВТОРИЗАЦИЯ ---
   useEffect(() => {
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
     
-    // ДЛЯ ТЕСТОВ В БРАУЗЕРЕ (раскомментируй строку ниже и впиши свой ID из бота)
-    // const tgUser = { id: 5340841151 }; 
-
     async function authCourier() {
-      if (!tgUser?.id) {
-        setIsAuthLoading(false);
-        return;
-      }
-      
+      if (!tgUser?.id) return setIsAuthLoading(false);
       const { data } = await supabase.from('couriers').select('*').eq('tg_id', tgUser.id).single();
       if (data) {
         setCourier(data);
@@ -44,27 +38,18 @@ export default function CourierApp() {
       }
       setIsAuthLoading(false);
     }
-    
     authCourier();
   }, []);
 
-  // 2. Подписка на обновления базы (Realtime)
+  // --- 2. ЖЕЛЕЗОБЕТОННОЕ АВТООБНОВЛЕНИЕ (Каждые 10 сек) ---
   useEffect(() => {
     if (!courier) return;
-
-    const channel = supabase.channel('courier_updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
-        fetchOrders(courier.tg_id, courier.city);
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'couriers', filter: `tg_id=eq.${courier.tg_id}` }, payload => {
-        setCourier(payload.new);
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel) };
+    const interval = setInterval(() => {
+      fetchOrders(courier.tg_id, courier.city);
+    }, 10000);
+    return () => clearInterval(interval);
   }, [courier]);
 
-  // Загрузка заказов
   const fetchOrders = async (tg_id, city) => {
     const { data: active } = await supabase
       .from('orders')
@@ -79,46 +64,34 @@ export default function CourierApp() {
     if (!active) {
       const { data: available } = await supabase
         .from('orders')
-        .select('*, restaurants!inner(city, name, lat, lon)')
+        .select('*, restaurants!inner(city, name, lat, lon, admin_tg_id)')
         .eq('status', 'accepted')
         .is('courier_tg_id', null)
         .eq('restaurants.city', city);
-        
       setAvailableOrders(available || []);
     } else {
       setAvailableOrders([]);
     }
   };
 
-  // 3. GPS Трекинг и Карта
+  // --- 3. GPS И КАРТА ---
   useEffect(() => {
     if (!courier || !isMapLoaded) return;
-
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const coords = [pos.coords.latitude, pos.coords.longitude];
         setLocation(coords);
-        
-        if (!mapRef.current) {
-          initMap(coords);
-        } else {
-          mapRef.current.courierPlacemark.geometry.setCoordinates(coords);
-          if (!activeOrder) {
-             mapRef.current.map.setCenter(coords);
-          }
-        }
+        if (!mapRef.current) initMap(coords);
+        else mapRef.current.courierPlacemark.geometry.setCoordinates(coords);
       },
       (err) => console.error("GPS Error:", err),
       { enableHighAccuracy: true }
     );
-
     return () => navigator.geolocation.clearWatch(watchId);
   }, [courier, isMapLoaded]);
 
-  // Построение маршрута
   useEffect(() => {
     if (!mapRef.current || !ymapsRef.current || !location) return;
-
     if (routeRef.current) {
         mapRef.current.map.geoObjects.remove(routeRef.current);
         routeRef.current = null;
@@ -139,6 +112,8 @@ export default function CourierApp() {
                 });
             }
         }
+    } else {
+        mapRef.current.map.setCenter(location, 15);
     }
   }, [activeOrder, location]);
 
@@ -146,36 +121,76 @@ export default function CourierApp() {
       ymapsRef.current.route([from, to], { routingMode: 'driving' }).then(route => {
           routeRef.current = route;
           mapRef.current.map.geoObjects.add(route);
-          const bounds = route.properties.get('boundedBy');
-          mapRef.current.map.setBounds(bounds, { checkZoomRange: true, zoomMargin: 30 });
+          mapRef.current.map.setBounds(route.properties.get('boundedBy'), { checkZoomRange: true, zoomMargin: 20 });
       });
   };
 
   const initMap = (centerCoords) => {
     const ymaps = window.ymaps;
     ymapsRef.current = ymaps;
-    const map = new ymaps.Map("courier_map", { center: centerCoords, zoom: 16, controls: ['zoomControl'] });
+    const map = new ymaps.Map("courier_map", { center: centerCoords, zoom: 15, controls: ['zoomControl'] });
     const placemark = new ymaps.Placemark(centerCoords, {}, { preset: 'islands#blueBicycleIcon' });
     map.geoObjects.add(placemark);
     mapRef.current = { map, courierPlacemark: placemark };
   };
 
-  // 4. Действия с заказами
+  // --- 4. УВЕДОМЛЕНИЯ В ТЕЛЕГРАМ ЧЕРЕЗ НАШ API ---
+  const notifyTelegram = async (order, type) => {
+      try {
+          const uData = typeof order.user_data === 'string' ? JSON.parse(order.user_data) : order.user_data;
+          
+          // Пуш клиенту
+          let clientMsg = "";
+          if (type === 'taken') clientMsg = `Мы нашли курьера! Он уже спешит в ресторан. 🏃‍♂️`;
+          if (type === 'delivering') clientMsg = `Курьер забрал заказ и уже в пути! 🚴‍♂️💨`;
+          if (type === 'arrived') clientMsg = `Курьер уже у ваших дверей! 📍`;
+          
+          if (uData?.id && clientMsg) {
+              await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: uData.id, message: `🛎 <b>Ваш заказ №${order.id}</b>\n${clientMsg}` }) });
+          }
+
+          // Пуш ресторану
+          const { data: res } = await supabase.from('restaurants').select('admin_tg_id').eq('name', order.restaurant_name).single();
+          const adminId = res?.admin_tg_id || 5340841151;
+          
+          let resMsg = "";
+          if (type === 'taken') resMsg = `Курьер платформы принял заказ и едет к вам 🏃‍♂️`;
+          if (type === 'delivering') resMsg = `Курьер забрал заказ и выехал к клиенту 🚴‍♂️`;
+          if (type === 'completed') resMsg = `Заказ успешно доставлен курьером платформы! ✅`;
+
+          if (resMsg) {
+              await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: adminId, message: `📦 <b>Заказ №${order.id}</b>\nСтатус: ${resMsg}` }) });
+          }
+      } catch(e) { console.error("Notify error", e) }
+  }
+
+  // --- 5. ДЕЙСТВИЯ ---
   const toggleStatus = async () => {
-    await supabase.from('couriers').update({ is_active: !courier.is_active }).eq('tg_id', courier.tg_id);
+    const newStatus = !courier.is_active;
+    await supabase.from('couriers').update({ is_active: newStatus }).eq('tg_id', courier.tg_id);
+    setCourier({...courier, is_active: newStatus});
+    fetchOrders(courier.tg_id, courier.city);
   };
 
-  const takeOrder = async (orderId) => {
-    await supabase.from('orders').update({ courier_tg_id: courier.tg_id, status: 'taken' }).eq('id', orderId);
+  const takeOrder = async (order) => {
+    setIsActionLoading(true);
+    await supabase.from('orders').update({ courier_tg_id: courier.tg_id, status: 'taken' }).eq('id', order.id);
+    await notifyTelegram(order, 'taken');
+    await fetchOrders(courier.tg_id, courier.city);
+    setIsActionLoading(false);
   };
 
   const updateOrderStatus = async (newStatus) => {
     if (!activeOrder) return;
+    setIsActionLoading(true);
     await supabase.from('orders').update({ status: newStatus }).eq('id', activeOrder.id);
+    await notifyTelegram(activeOrder, newStatus);
+    await fetchOrders(courier.tg_id, courier.city);
+    setIsActionLoading(false);
   };
 
   if (isAuthLoading) return <div className="min-h-screen flex items-center justify-center bg-gray-50 font-black text-gray-400">Загрузка...</div>;
-  if (!courier) return <div className="min-h-screen flex items-center justify-center bg-gray-50 font-black text-red-500 text-center p-6">Доступ запрещен.<br/>Вы не зарегистрированы как курьер.</div>;
+  if (!courier) return <div className="min-h-screen flex items-center justify-center bg-gray-50 font-black text-red-500 text-center p-6">Доступ запрещен.<br/>Вы не зарегистрированы.</div>;
 
   const isPaid = !courier.paid_until || new Date(courier.paid_until) > new Date();
 
@@ -184,81 +199,88 @@ export default function CourierApp() {
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapLoaded(true)} />
 
       {/* ШАПКА */}
-      <div className="bg-white p-4 shadow-sm z-10 flex justify-between items-center">
+      <div className="bg-white p-4 shadow-sm z-20 flex justify-between items-center relative">
         <div>
-          <h1 className="font-black text-xl text-blue-600 leading-none">LEKI COURIER</h1>
+          <h1 className="font-black text-xl text-blue-600 leading-none">LEKI PRO</h1>
           <p className="text-xs font-bold text-gray-400">{courier.name} • {courier.city}</p>
         </div>
-        
         {isPaid ? (
-            <button 
-                onClick={toggleStatus} 
-                className={`px-4 py-2 rounded-xl font-black text-sm transition-all shadow-sm ${courier.is_active ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}
-            >
+            <button onClick={toggleStatus} className={`px-5 py-2 rounded-xl font-black text-sm transition-all shadow-md ${courier.is_active ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
                 {courier.is_active ? '🟢 НА ЛИНИИ' : '🔴 ПЕРЕРЫВ'}
             </button>
-        ) : (
-            <span className="bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-black">Подписка истекла</span>
-        )}
+        ) : <span className="bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-black">Оплатите доступ</span>}
       </div>
 
-      {/* КАРТА */}
-      <div className="flex-1 relative">
+      {/* КОМПАКТНАЯ КАРТА СВЕРХУ (35% ЭКРАНА) */}
+      <div className="h-[35vh] relative w-full border-b-4 border-gray-200 shadow-inner">
         <div id="courier_map" className="w-full h-full bg-gray-200">
             {!isMapLoaded && <div className="w-full h-full flex items-center justify-center text-gray-400 font-bold">Загрузка карты...</div>}
         </div>
         {!location && isMapLoaded && (
-            <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex items-center justify-center font-black text-blue-600 animate-pulse">
-                Поиск GPS сигнала...
+            <div className="absolute inset-0 bg-white/60 backdrop-blur-sm flex items-center justify-center font-black text-blue-600 animate-pulse">
+                Поиск GPS...
             </div>
         )}
       </div>
 
-      {/* ПАНЕЛЬ ЗАКАЗОВ */}
-      <div className="bg-white rounded-t-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.1)] z-20 flex flex-col" style={{ height: '40vh' }}>
-        
+      {/* ПАНЕЛЬ ЗАКАЗОВ СНИЗУ (ОСТАВШАЯСЯ ЧАСТЬ ЭКРАНА) */}
+      <div className="flex-1 bg-gray-50 overflow-y-auto">
         {activeOrder ? (
-            <div className="p-6 flex flex-col h-full">
-                <div className="flex justify-between items-start mb-4">
-                    <span className="bg-blue-100 text-blue-600 font-black px-3 py-1 rounded-lg text-xs uppercase">Текущий заказ #{activeOrder.id}</span>
-                    <span className="font-black text-lg">{activeOrder.total_price} ₽</span>
+            <div className="p-5 flex flex-col min-h-full bg-white">
+                <div className="flex justify-between items-center mb-5 border-b border-gray-100 pb-4">
+                    <span className="bg-blue-100 text-blue-700 font-black px-3 py-1.5 rounded-xl text-xs uppercase tracking-wide">Заказ #{activeOrder.id}</span>
+                    <span className="font-black text-2xl text-gray-800">{activeOrder.total_price} ₽</span>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto mb-4 space-y-2">
-                    <p className="text-sm font-bold text-gray-500">Забрать:</p>
-                    <p className="font-black bg-gray-50 p-3 rounded-xl mb-2">{activeOrder.restaurant_name}</p>
-                    <p className="text-sm font-bold text-gray-500">Отвезти:</p>
-                    <p className="font-black bg-gray-50 p-3 rounded-xl">{activeOrder.address}</p>
-                    <p className="text-sm font-bold text-blue-500 mt-2">📞 {activeOrder.phone}</p>
+                <div className="flex-1 space-y-4 mb-6">
+                    <div className="relative pl-6 border-l-2 border-dashed border-gray-200 ml-3 space-y-6">
+                        <div className="relative">
+                            <div className="absolute -left-[31px] top-1 w-4 h-4 bg-gray-200 border-2 border-white rounded-full"></div>
+                            <p className="text-[10px] font-black text-gray-400 uppercase">ЗАБРАТЬ ИЗ:</p>
+                            <p className="font-black text-lg text-gray-800 leading-tight">{activeOrder.restaurant_name}</p>
+                        </div>
+                        <div className="relative">
+                            <div className="absolute -left-[31px] top-1 w-4 h-4 bg-blue-500 border-2 border-white rounded-full shadow-sm"></div>
+                            <p className="text-[10px] font-black text-blue-400 uppercase">ОТВЕЗТИ:</p>
+                            <p className="font-black text-lg text-blue-900 leading-tight">{activeOrder.address}</p>
+                            <a href={`tel:${activeOrder.phone}`} className="inline-block mt-2 bg-gray-100 text-gray-700 font-black px-4 py-2 rounded-xl text-sm active:scale-95">📞 Позвонить клиенту</a>
+                        </div>
+                    </div>
                 </div>
 
-                {activeOrder.status === 'taken' && (
-                    <button onClick={() => updateOrderStatus('delivering')} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-lg active:scale-95 shadow-lg">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>
-                )}
-                {activeOrder.status === 'delivering' && (
-                    <button onClick={() => updateOrderStatus('arrived')} className="w-full bg-orange-500 text-white py-4 rounded-2xl font-black text-lg active:scale-95 shadow-lg">📍 Я НА АДРЕСЕ</button>
-                )}
-                {activeOrder.status === 'arrived' && (
-                    <button onClick={() => updateOrderStatus('completed')} className="w-full bg-green-500 text-white py-4 rounded-2xl font-black text-lg active:scale-95 shadow-lg">🏁 ВРУЧИЛ КЛИЕНТУ</button>
-                )}
+                <div className="mt-auto">
+                    {activeOrder.status === 'taken' && (
+                        <button disabled={isActionLoading} onClick={() => updateOrderStatus('delivering')} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50">🏃‍♂️ ЗАБРАЛ ЗАКАЗ</button>
+                    )}
+                    {activeOrder.status === 'delivering' && (
+                        <button disabled={isActionLoading} onClick={() => updateOrderStatus('arrived')} className="w-full bg-orange-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50">📍 Я НА АДРЕСЕ</button>
+                    )}
+                    {activeOrder.status === 'arrived' && (
+                        <button disabled={isActionLoading} onClick={() => updateOrderStatus('completed')} className="w-full bg-green-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50">🏁 ВРУЧИЛ КЛИЕНТУ</button>
+                    )}
+                </div>
             </div>
         ) : (
-            <div className="p-6 flex flex-col h-full">
-                <h2 className="font-black text-xl mb-4">Доступные заказы</h2>
+            <div className="p-4 h-full">
                 {!courier.is_active ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center">
-                        <span className="text-5xl mb-2">☕</span>
-                        <p className="text-gray-400 font-bold">Вы на перерыве.<br/>Выйдите на линию, чтобы получать заказы.</p>
+                    <div className="h-full flex flex-col items-center justify-center text-center p-6">
+                        <div className="w-20 h-20 bg-gray-200 rounded-full flex items-center justify-center text-3xl mb-4 opacity-50">☕</div>
+                        <h3 className="font-black text-xl text-gray-800 mb-2">Смена закрыта</h3>
+                        <p className="text-gray-500 font-medium text-sm">Выйдите на линию, чтобы радар начал искать для вас заказы.</p>
                     </div>
                 ) : availableOrders.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center">
-                        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
-                        <p className="text-gray-400 font-bold">Ждем новые заказы...</p>
+                    <div className="h-full flex flex-col items-center justify-center text-center">
+                        <div className="relative w-16 h-16 mb-4">
+                            <div className="absolute inset-0 bg-blue-400 rounded-full animate-ping opacity-20"></div>
+                            <div className="absolute inset-2 bg-blue-500 rounded-full flex items-center justify-center shadow-lg"><span className="text-white text-xl">📡</span></div>
+                        </div>
+                        <h3 className="font-black text-lg text-gray-800">Радар включен</h3>
+                        <p className="text-gray-400 font-medium text-sm">Ожидаем новые заказы...</p>
                     </div>
                 ) : (
-                    <div className="flex-1 overflow-y-auto space-y-3">
+                    <div className="space-y-3 pb-6">
+                        <h2 className="font-black text-lg px-1 text-gray-800">Доступные заказы ({availableOrders.length})</h2>
                         {availableOrders.map(order => {
-                             // Вычисляем долю курьера (разницу между total_price и стоимостью блюд)
                              let itemsTotal = 0;
                              try {
                                  const itemsArr = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
@@ -267,16 +289,27 @@ export default function CourierApp() {
                              const deliveryFee = order.total_price - itemsTotal;
 
                              return (
-                                <div key={order.id} className="border-2 border-gray-100 rounded-2xl p-4 flex flex-col">
-                                    <div className="flex justify-between items-center mb-2">
-                                        <span className="font-black text-lg">{order.restaurant_name}</span>
-                                        <div className="text-right">
-                                            <span className="font-black text-blue-600 block">{deliveryFee} ₽</span>
-                                            <span className="text-[10px] text-gray-400 font-bold uppercase">Ваша доля</span>
+                                <div key={order.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 relative overflow-hidden">
+                                    <div className="flex justify-between items-start mb-3">
+                                        <div>
+                                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-1">Ресторан</span>
+                                            <span className="font-black text-lg leading-none text-gray-800">{order.restaurant_name}</span>
+                                        </div>
+                                        <div className="text-right bg-blue-50 p-2 rounded-xl">
+                                            <span className="font-black text-blue-600 block text-lg leading-none">{deliveryFee} ₽</span>
+                                            <span className="text-[9px] text-blue-400 font-black uppercase">Ваша доля</span>
                                         </div>
                                     </div>
-                                    <span className="text-xs font-bold text-gray-400 bg-gray-50 p-2 rounded-lg truncate mb-3">📍 Скрыто до принятия</span>
-                                    <button onClick={() => takeOrder(order.id)} className="w-full bg-blue-600 text-white py-3 rounded-xl font-black text-sm active:scale-95">🛵 ПРИНЯТЬ ЗАКАЗ</button>
+                                    <div className="flex items-center gap-2 mb-4 bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                        <span className="text-xl">📍</span>
+                                        <div>
+                                            <span className="text-[10px] font-black text-gray-400 uppercase block leading-none mb-1">Куда везти</span>
+                                            <span className="text-xs font-bold text-gray-600 truncate block">Точный адрес после принятия</span>
+                                        </div>
+                                    </div>
+                                    <button disabled={isActionLoading} onClick={() => takeOrder(order)} className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-black text-sm active:scale-95 transition-all shadow-md hover:bg-black disabled:opacity-50">
+                                        ВЗЯТЬ ЗАКАЗ
+                                    </button>
                                 </div>
                             )
                         })}
