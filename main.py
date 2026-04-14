@@ -17,8 +17,8 @@ DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-c
 MAIN_ADMIN_ID = 5340841151 
 
 # ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
-SUPABASE_URL = "ТВОЙ_NEXT_PUBLIC_SUPABASE_URL"
-SUPABASE_KEY = "ТВОЙ_NEXT_PUBLIC_SUPABASE_ANON_KEY"
+SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
+SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
 MSK = timezone(timedelta(hours=3))
 
@@ -49,7 +49,6 @@ async def upload_photo_to_supabase(file_id: str):
                     if up_resp.status in (200, 201): return f"{SUPABASE_URL}/storage/v1/object/public/receipts/{filename}"
     return None
 
-# --- ИСПРАВЛЕНИЕ: ВОЗВРАЩЕНА ФУНКЦИЯ УВЕДОМЛЕНИЯ РЕСТОРАНА ---
 async def notify_restaurant(conn, order_id, status_msg):
     order = await conn.fetchrow("SELECT restaurant_name FROM orders WHERE id = $1", order_id)
     if order:
@@ -241,7 +240,6 @@ async def admin_set_buffer(message: types.Message):
         await message.answer(f"✅ Буферное время выхода курьера: <b>{seconds} сек</b>.", parse_mode="HTML")
     finally: await conn.close()
 
-# --- ИСПРАВЛЕНИЕ: КОМАНДА ДЛЯ СМЕНЫ ВРЕМЕНИ ОЖИДАНИЯ СВОЕЙ ДОСТАВКИ ---
 @dp.message(Command("set_timeout"))
 async def admin_set_timeout(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
@@ -386,6 +384,10 @@ async def get_courier_panel_text(conn, tg_id):
     
     text = (f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏙 Город: {c['city']}\n💳 Оплачено до: {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>")
     kb = []
+    
+    # ---> КНОПКА WEB APP ДЛЯ КУРЬЕРА <---
+    kb.append([InlineKeyboardButton(text="📱 ОТКРЫТЬ КАРТУ (Приложение)", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))])
+    
     active_order = await conn.fetchrow("SELECT id FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived') LIMIT 1", tg_id)
     if active_order: kb.append([InlineKeyboardButton(text="📦 Мой текущий заказ", callback_data=f"cour_active_{active_order['id']}")])
     kb.append([InlineKeyboardButton(text="🏙 Изменить город", callback_data="cour_change_city")])
@@ -546,7 +548,6 @@ async def courier_sos(callback: CallbackQuery):
         await callback.answer("🚨 Отправлено!", show_alert=True)
     finally: await conn.close()
 
-# --- ИСПРАВЛЕНИЕ: БЕЗОПАСНАЯ ЗАМЕНА СООБЩЕНИЙ В КНОПКАХ ---
 @dp.callback_query(F.data.startswith("take_"))
 async def take_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
@@ -627,7 +628,6 @@ async def done_order(callback: CallbackQuery):
     try:
         await conn.execute("UPDATE orders SET status = 'completed' WHERE id = $1", order_id)
         
-        # --- ИСПРАВЛЕНИЕ УВЕДОМЛЕНИЙ О ДОСТАВКЕ ---
         order_data = await conn.fetchrow("SELECT user_data, restaurant_name, courier_tg_id FROM orders WHERE id = $1", order_id)
         
         if order_data['courier_tg_id'] == -1:
@@ -655,7 +655,6 @@ async def handle_rate_res(callback: CallbackQuery):
         await conn.execute("INSERT INTO restaurant_reviews (restaurant_id, order_id, rating) VALUES ($1, $2, $3)", int(res_id), int(order_id), int(stars))
         order = await conn.fetchrow("SELECT courier_tg_id FROM orders WHERE id = $1", int(order_id))
         
-        # --- ИСПРАВЛЕНИЕ: ЕСЛИ ВЕЗ РЕСТОРАН, НЕ СПРАШИВАЕМ ПРО КУРЬЕРА ---
         if order['courier_tg_id'] == -1:
             await callback.message.edit_text("✅ Оценка еды сохранена!\nСпасибо за заказ!", parse_mode="HTML")
         else:
@@ -675,7 +674,7 @@ async def handle_rate_cour(callback: CallbackQuery):
     finally: await conn.close()
 
 # ==========================================
-#           АДМИН РЕСТОРАНА И МЕНЮ БЛЮД
+#           АДМИН РЕСТОРАНА
 # ==========================================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message, state: FSMContext):
@@ -1174,7 +1173,6 @@ async def order_checker():
             if conn: await conn.close()
         await asyncio.sleep(15)
 
-# --- ИСПРАВЛЕНИЕ ТАЙМЕРА ---
 async def stuck_order_checker():
     while True:
         conn = None
