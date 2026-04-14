@@ -591,6 +591,11 @@ async def take_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
     conn = await get_db_conn()
     try:
+        # ЗАЩИТА: Проверка лимита (макс 2 заказа)
+        active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived')", callback.from_user.id)
+        if active_count >= 2:
+            return await callback.answer("🛑 ЛИМИТ! Вы не можете взять больше 2-х заказов одновременно.", show_alert=True)
+
         order = await conn.fetchrow("SELECT courier_tg_id, address, restaurant_name, items, total_price FROM orders WHERE id = $1", order_id)
         if not order: return await callback.answer("Заказ не найден!", show_alert=True)
         if order['courier_tg_id']: return await callback.answer("Уже занят другим курьером!", show_alert=True)
@@ -616,7 +621,9 @@ async def take_order(callback: CallbackQuery):
         text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес: {order['address']}\n💵 <b>Заберите {delivery_fee} ₽ в ресторане!</b>"
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else: await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-    finally: await conn.close(); await callback.answer()
+    finally: 
+        await conn.close()
+        await callback.answer()
 
 @dp.callback_query(F.data.startswith("picked_"))
 async def picked_order(callback: CallbackQuery):
