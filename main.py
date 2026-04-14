@@ -7,7 +7,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -32,6 +32,34 @@ class AdminStates(StatesGroup):
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State(); waiting_for_modifier = State()
 
 class CourierStates(StatesGroup): change_city = State()
+
+# --- КЛАВИАТУРЫ МЕНЮ ---
+def get_admin_main_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏠 Панель управления"), KeyboardButton(text="📦 Текущие заказы")],
+            [KeyboardButton(text="🆘 Поддержка")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_courier_main_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📱 Открыть карту")],
+            [KeyboardButton(text="🆘 Поддержка")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_client_main_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
+            [KeyboardButton(text="🆘 Поддержка")]
+        ],
+        resize_keyboard=True
+    )
 
 async def get_db_conn(): return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
@@ -306,14 +334,23 @@ async def admin_set_paid(message: types.Message):
         await message.answer(f"✅ Доступ продлен до {new_date.strftime('%d.%m.%Y')}")
     finally: await conn.close()
 
+# --- ИЗМЕНЕННАЯ КОМАНДА /start ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🍔 Открыть меню", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))],
-        [InlineKeyboardButton(text="🆘 Поддержка", url="https://t.me/gasangamidov")]
-    ])
-    await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\n\n🛠 Админ: /admin\n🛵 Курьер: /courier", reply_markup=kb)
+    conn = await get_db_conn()
+    try:
+        is_courier = await conn.fetchrow("SELECT tg_id FROM couriers WHERE tg_id = $1", message.from_user.id)
+        is_res_admin = await conn.fetchrow("SELECT id FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
+        
+        if message.from_user.id == MAIN_ADMIN_ID or is_res_admin:
+            await message.answer("👑 Добро пожаловать, Администратор! Ваши инструменты управления в меню ниже.", reply_markup=get_admin_main_kb())
+        elif is_courier:
+            await message.answer("🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню.", reply_markup=get_courier_main_kb())
+        else:
+            await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
+    finally:
+        await conn.close()
 
 @dp.message(Command("my_id"))
 async def cmd_my_id(message: types.Message):
@@ -405,7 +442,6 @@ async def cmd_courier(message: types.Message, state: FSMContext):
         
         c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
         if c['city'] == '-':
-            # --- ИСПРАВЛЕНИЕ: Автоматический список городов из ресторанов ---
             cities = await conn.fetch("SELECT DISTINCT city AS city_name FROM restaurants WHERE city IS NOT NULL AND city != '-'")
             if not cities: return await message.answer("❌ В системе еще нет активных ресторанов с городами!")
             city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
@@ -418,7 +454,6 @@ async def cmd_courier(message: types.Message, state: FSMContext):
 async def cour_change_city_handler(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
-        # --- ИСПРАВЛЕНИЕ: Автоматический список городов из ресторанов ---
         cities = await conn.fetch("SELECT DISTINCT city AS city_name FROM restaurants WHERE city IS NOT NULL AND city != '-'")
         if not cities: return await callback.answer("Города не найдены!", show_alert=True)
         city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
@@ -1307,6 +1342,60 @@ async def handle_decision(callback: CallbackQuery):
                 else:
                     if client_id: await bot.send_message(client_id, f"❌ Заказ №{order_id} отменен заведением.", reply_markup=markup)
     finally: await conn.close(); await callback.answer()
+
+
+# ==========================================
+#           ОБРАБОТКА НИЖНЕГО МЕНЮ
+# ==========================================
+
+@dp.message(F.text == "🏠 Панель управления")
+async def btn_admin_panel(message: types.Message, state: FSMContext):
+    await cmd_admin(message, state)
+
+@dp.message(F.text == "🛵 Личный кабинет")
+async def btn_courier_panel(message: types.Message, state: FSMContext):
+    await cmd_courier(message, state)
+
+@dp.message(F.text == "📱 Открыть карту")
+async def btn_courier_map(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 ОТКРЫТЬ ПРИЛОЖЕНИЕ", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))]
+    ])
+    await message.answer("Твоя карта заказов:", reply_markup=kb)
+
+@dp.message(F.text == "🆘 Поддержка")
+async def btn_support(message: types.Message):
+    await message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
+
+@dp.message(F.text == "📦 Текущие заказы")
+async def btn_active_orders(message: types.Message):
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
+        if not res and message.from_user.id != MAIN_ADMIN_ID:
+            return await message.answer("У вас нет доступа.")
+            
+        query = "SELECT id, status, total_price, address FROM orders WHERE status NOT IN ('completed', 'cancelled', 'awaiting_payment', 'payment_pending')"
+        args = []
+        
+        if message.from_user.id != MAIN_ADMIN_ID:
+            query += " AND restaurant_name = $1"
+            args.append(res['name'])
+            
+        orders = await conn.fetch(query, *args)
+        
+        if not orders:
+            return await message.answer("Сейчас активных заказов нет. Отдыхаем! ☕️")
+            
+        text = "📋 <b>АКТИВНЫЕ ЗАКАЗЫ:</b>\n\n"
+        for o in orders:
+            status_emoji = "🆕" if o['status'] == 'new' else "👨‍🍳" if o['status'] == 'accepted' else "🛵"
+            text += f"{status_emoji} <b>Заказ №{o['id']}</b> | {o['total_price']}₽\n📍 {o['address'][:30]}...\n\n"
+        
+        await message.answer(text, parse_mode="HTML")
+    finally:
+        await conn.close()
+
 
 async def main():
     asyncio.create_task(order_checker())
