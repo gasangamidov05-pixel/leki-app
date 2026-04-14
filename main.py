@@ -591,7 +591,6 @@ async def take_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
     conn = await get_db_conn()
     try:
-        # ЗАЩИТА: Проверка лимита (макс 2 заказа)
         active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived')", callback.from_user.id)
         if active_count >= 2:
             return await callback.answer("🛑 ЛИМИТ! Вы не можете взять больше 2-х заказов одновременно.", show_alert=True)
@@ -1059,7 +1058,7 @@ async def adm_edit_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     conn = await get_db_conn()
     try:
-        await conn.execute("UPDATE products SET name = $1 WHERE id = $2", message.text, data['prod_id'])
+        await conn.execute("UPDATE SET name = $1 WHERE id = $2", message.text, data['prod_id'])
         await message.answer("✅ Обновлено!")
         await state.clear()
         await cmd_admin(message, state)
@@ -1194,7 +1193,6 @@ async def order_checker():
                 
                 target = res_info['admin_tg_id'] if res_info and res_info['admin_tg_id'] else MAIN_ADMIN_ID
                 
-                # --- ИСПРАВЛЕНИЕ ЗАЩИТЫ CLIENT ID ---
                 u = json.loads(order['user_data'])
                 if isinstance(u, str): u = json.loads(u)
                 client_id = u.get('id', 0) if u.get('id') else 0
@@ -1294,7 +1292,6 @@ async def handle_self_delivery(callback: CallbackQuery):
         await conn.close()
         await callback.answer()
 
-# --- ИСПРАВЛЕНИЕ: БЕЗОПАСНЫЙ СБОР ID ---
 @dp.callback_query(F.data.startswith("time_"))
 async def ask_prep_time(callback: CallbackQuery):
     data = callback.data.split("_")
@@ -1330,7 +1327,9 @@ async def handle_decision(callback: CallbackQuery):
         if action == "ok":
             prep_time = int(data[3])
             ready_time = (datetime.now(MSK) + timedelta(minutes=prep_time)).strftime('%H:%M')
-            await conn.execute("UPDATE orders SET status = 'accepted' WHERE id = $1", order_id)
+            
+            # --- ИСПРАВЛЕНИЕ: СОХРАНЯЕМ ВРЕМЯ ГОТОВНОСТИ В БАЗУ ---
+            await conn.execute("UPDATE orders SET status = 'accepted', ready_time = $2 WHERE id = $1", order_id, ready_time)
             
             if client_id: 
                 try: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
