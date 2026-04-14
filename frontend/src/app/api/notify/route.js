@@ -1,21 +1,25 @@
 import { NextResponse } from 'next/server';
 
-// Токен твоего бота
 const BOT_TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4";
 
 export async function POST(req) {
     try {
-        const { targetId, message } = await req.json();
+        const { targetId, message, reply_markup } = await req.json();
         
-        // Отправляем запрос напрямую в сервер Telegram
+        const body = {
+            chat_id: targetId,
+            text: message,
+            parse_mode: 'HTML'
+        };
+
+        if (reply_markup) {
+            body.reply_markup = reply_markup;
+        }
+
         const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: targetId,
-                text: message,
-                parse_mode: 'HTML'
-            })
+            body: JSON.stringify(body)
         });
         
         const data = await response.json();
