@@ -126,26 +126,65 @@ export default function RestaurantMenu() {
     });
   };
 
+  // --- НОВАЯ УМНАЯ ЛОГИКА ДОСТАВКИ ---
   const updateDeliveryPrice = (coords) => {
-    if (restaurant?.lat && restaurant?.lon) {
-      const distance = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
-      const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
+    if (!restaurant?.lat || !restaurant?.lon) return;
 
-      const BASE = restaurant?.base_delivery_price || 150;
-      const KM_PRICE = restaurant?.km_delivery_price || 22;
+    setIsCalculating(true);
 
-      if (distance > MAX_DISTANCE) {
-        setDeliveryError(`Слишком далеко (${Math.round(distance)} км). Доставляем до ${MAX_DISTANCE} км.`);
+    const ymaps = window.ymaps;
+    if (ymaps && ymaps.route) {
+        // Прокладываем маршрут по автомобильным дорогам
+        ymaps.route([ [restaurant.lat, restaurant.lon], coords ], { routingMode: 'driving' }).then(
+            function (route) {
+                const distanceKm = route.getLength() / 1000;
+                calculatePriceLogic(distanceKm, "дорогам");
+            },
+            function (error) {
+                // Если Яндекс не смог проложить маршрут (сбой или точка в горах) - считаем по прямой
+                const distanceKm = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
+                calculatePriceLogic(distanceKm, "прямой");
+            }
+        );
+    } else {
+         const distanceKm = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
+         calculatePriceLogic(distanceKm, "прямой");
+    }
+  };
+
+  const calculatePriceLogic = (distance, method) => {
+    const MAX_DISTANCE = restaurant?.delivery_radius || 15; 
+    const BASE = restaurant?.base_delivery_price || 150;
+    const KM_PRICE = restaurant?.km_delivery_price || 22;
+    const FREE_KM = restaurant?.free_base_km || 0;
+    const SURGE = restaurant?.surge_multiplier || 1.0;
+    const WEATHER = restaurant?.weather_bonus || 0;
+
+    if (distance > MAX_DISTANCE) {
+        setDeliveryError(`Слишком далеко (${distance.toFixed(1)} км по ${method}). Доставляем до ${MAX_DISTANCE} км.`);
         setDeliveryPrice(0);
         setIsAddressValid(false);
-      } else {
+    } else {
         setDeliveryError(''); 
-        setDeliveryPrice(Math.round(BASE + (distance * KM_PRICE)));
+        
+        // 1. Расчет платной дистанции (вычитаем бесплатные КМ)
+        const chargeableDistance = Math.max(0, distance - FREE_KM);
+        
+        // 2. База + километраж
+        let rawPrice = BASE + (chargeableDistance * KM_PRICE);
+        
+        // 3. Умножаем на спрос (час пик)
+        rawPrice = rawPrice * SURGE;
+        
+        // 4. Добавляем погодный бонус (дождь/снег)
+        rawPrice = rawPrice + WEATHER;
+
+        setDeliveryPrice(Math.round(rawPrice));
         setIsAddressValid(true);
-      }
     }
     setIsCalculating(false);
   };
+  // ------------------------------------
 
   const getLocation = () => {
     setIsCalculating(true);
@@ -183,7 +222,6 @@ export default function RestaurantMenu() {
     try {
       let publicUrl = null;
 
-      // Загружаем чек только если это ручная оплата
       if (!isYookassa && receiptFile) {
         const fileExt = receiptFile.name.split('.').pop();
         const fileName = `${Math.random()}.${fileExt}`;
@@ -211,7 +249,7 @@ export default function RestaurantMenu() {
         restaurant_name: restaurant?.name,
         items: filteredProducts.filter(p => cart[p.id] > 0).map(p => ({ name: p.name, count: cart[p.id], price: p.price })),
         total_price: totalSum + deliveryPrice,
-        status: isYookassa ? 'awaiting_payment' : 'new', // Ставим статус ожидания для онлайна
+        status: isYookassa ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
         address: fullAddressStr,
@@ -369,7 +407,6 @@ export default function RestaurantMenu() {
                   <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
 
-                {/* ЛОГИКА ОТОБРАЖЕНИЯ МЕТОДА ОПЛАТЫ */}
                 {restaurant?.payment_method === 'yookassa' ? (
                   <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border-2 border-green-100 text-center">
                     <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
@@ -399,8 +436,29 @@ export default function RestaurantMenu() {
                     <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
                   ) : (
                     <>
-                      <div className="flex justify-between text-sm font-bold text-blue-800"><span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span></div>
-                      <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900"><span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span></div>
+                      {/* ОТОБРАЖЕНИЕ АКТИВНЫХ БОНУСОВ И МНОЖИТЕЛЕЙ */}
+                      {restaurant?.free_base_km > 0 && isAddressValid && (
+                         <div className="flex justify-between text-[10px] font-bold text-green-600">
+                            <span>Бесплатные км:</span><span>{restaurant.free_base_km} км</span>
+                         </div>
+                      )}
+                      {restaurant?.surge_multiplier > 1.0 && isAddressValid && (
+                         <div className="flex justify-between text-[10px] font-bold text-orange-500">
+                            <span>Повышенный спрос:</span><span>x{restaurant.surge_multiplier}</span>
+                         </div>
+                      )}
+                      {restaurant?.weather_bonus > 0 && isAddressValid && (
+                         <div className="flex justify-between text-[10px] font-bold text-blue-500">
+                            <span>Непогода:</span><span>+{restaurant.weather_bonus} ₽</span>
+                         </div>
+                      )}
+
+                      <div className="flex justify-between text-sm font-bold text-blue-800 border-t border-blue-100 pt-2">
+                          <span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span>
+                      </div>
+                      <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
+                          <span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span>
+                      </div>
                     </>
                   )}
                 </div>
