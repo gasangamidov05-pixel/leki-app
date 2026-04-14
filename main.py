@@ -17,8 +17,8 @@ DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-c
 MAIN_ADMIN_ID = 5340841151 
 
 # ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
-SUPABASE_URL = "ТВОЙ_NEXT_PUBLIC_SUPABASE_URL"
-SUPABASE_KEY = "ТВОЙ_NEXT_PUBLIC_SUPABASE_ANON_KEY"
+SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
+SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
 MSK = timezone(timedelta(hours=3))
 
@@ -1232,7 +1232,8 @@ async def ask_prep_time(callback: CallbackQuery):
     _, order_id, client_id = callback.data.split("_")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="15 мин", callback_data=f"ok_{order_id}_{client_id}_15"), InlineKeyboardButton(text="30 мин", callback_data=f"ok_{order_id}_{client_id}_30")],
-        [InlineKeyboardButton(text="45 мин", callback_data=f"ok_{order_id}_{client_id}_45"), InlineKeyboardButton(text="1 час", callback_data=f"ok_{order_id}_{client_id}_60")]
+        [InlineKeyboardButton(text="45 мин", callback_data=f"ok_{order_id}_{client_id}_45"), InlineKeyboardButton(text="1 час", callback_data=f"ok_{order_id}_{client_id}_60")],
+        [InlineKeyboardButton(text="1.5 часа", callback_data=f"ok_{order_id}_{client_id}_90"), InlineKeyboardButton(text="2 часа", callback_data=f"ok_{order_id}_{client_id}_120")]
     ])
     await callback.message.edit_reply_markup(reply_markup=kb)
 
