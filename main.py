@@ -17,8 +17,8 @@ DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-c
 MAIN_ADMIN_ID = 5340841151 
 
 # ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
-SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
-SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
+SUPABASE_URL = "ТВОЙ_NEXT_PUBLIC_SUPABASE_URL"
+SUPABASE_KEY = "ТВОЙ_NEXT_PUBLIC_SUPABASE_ANON_KEY"
 
 MSK = timezone(timedelta(hours=3))
 
@@ -140,7 +140,7 @@ async def courier_monitor():
         conn = None
         try:
             conn = await get_db_conn()
-            cities = await conn.fetch("SELECT DISTINCT city FROM restaurants WHERE city IS NOT NULL")
+            cities = await conn.fetch("SELECT DISTINCT city FROM restaurants WHERE city IS NOT NULL AND city != '-'")
             for c in cities:
                 city_name = c['city']
                 count = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", city_name)
@@ -385,7 +385,6 @@ async def get_courier_panel_text(conn, tg_id):
     text = (f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏙 Город: {c['city']}\n💳 Оплачено до: {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>")
     kb = []
     
-    # ---> КНОПКА WEB APP ДЛЯ КУРЬЕРА <---
     kb.append([InlineKeyboardButton(text="📱 ОТКРЫТЬ КАРТУ (Приложение)", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))])
     
     active_order = await conn.fetchrow("SELECT id FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived') LIMIT 1", tg_id)
@@ -406,8 +405,9 @@ async def cmd_courier(message: types.Message, state: FSMContext):
         
         c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
         if c['city'] == '-':
-            cities = await conn.fetch("SELECT city_name FROM city_pricing")
-            if not cities: return await message.answer("❌ Админ еще не добавил города в систему!")
+            # --- ИСПРАВЛЕНИЕ: Автоматический список городов из ресторанов ---
+            cities = await conn.fetch("SELECT DISTINCT city AS city_name FROM restaurants WHERE city IS NOT NULL AND city != '-'")
+            if not cities: return await message.answer("❌ В системе еще нет активных ресторанов с городами!")
             city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
             await message.answer("📍 Выберите ваш город для работы:", reply_markup=city_kb)
         else: 
@@ -418,7 +418,9 @@ async def cmd_courier(message: types.Message, state: FSMContext):
 async def cour_change_city_handler(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
-        cities = await conn.fetch("SELECT city_name FROM city_pricing")
+        # --- ИСПРАВЛЕНИЕ: Автоматический список городов из ресторанов ---
+        cities = await conn.fetch("SELECT DISTINCT city AS city_name FROM restaurants WHERE city IS NOT NULL AND city != '-'")
+        if not cities: return await callback.answer("Города не найдены!", show_alert=True)
         city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
         await callback.message.edit_text("📍 Выберите ваш город:", reply_markup=city_kb)
     finally: await conn.close()
@@ -674,7 +676,7 @@ async def handle_rate_cour(callback: CallbackQuery):
     finally: await conn.close()
 
 # ==========================================
-#           АДМИН РЕСТОРАНА
+#           АДМИН РЕСТОРАНА И МЕНЮ БЛЮД
 # ==========================================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message, state: FSMContext):
