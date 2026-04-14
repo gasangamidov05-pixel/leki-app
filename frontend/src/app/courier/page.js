@@ -163,14 +163,24 @@ export default function CourierApp() {
       const uData = typeof order.user_data === 'string' ? JSON.parse(order.user_data) : order.user_data;
       const { data: res } = await supabase.from('restaurants').select('id, admin_tg_id').eq('name', order.restaurant_name).single();
       
+      // 1. Пуш клиенту
       let clientMsg = type === 'taken' ? 'Курьер найден и спешит в ресторан! 🏃‍♂️' : type === 'delivering' ? 'Курьер забрал заказ и уже в пути! 🚴‍♂️' : type === 'arrived' ? 'Курьер у дверей! 📍' : '';
       if (clientMsg && uData?.id) await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: uData.id, message: `🛎 <b>Заказ №${order.id}</b>\n${clientMsg}` }) });
       
+      // 2. ВОЗВРАЩАЕМ: Пуш ресторану
+      let resMsg = type === 'taken' ? 'Курьер платформы принял заказ и едет к вам 🏃‍♂️' : type === 'delivering' ? 'Курьер забрал заказ и выехал к клиенту 🚴‍♂️' : type === 'completed' ? 'Заказ успешно доставлен курьером платформы! ✅' : '';
+      const targetResId = res?.admin_tg_id || 5340841151; // Если нет админа, шлет тебе
+      
+      if (resMsg && targetResId) {
+          await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: targetResId, message: `📦 <b>Заказ №${order.id}</b>\nСтатус: ${resMsg}` }) });
+      }
+
+      // 3. Отзывы после завершения
       if (type === 'completed' && uData?.id) {
          const kb = { inline_keyboard: [[{ text: "1 ⭐", callback_data: `rres_${order.id}_${res.id}_1` }, { text: "2 ⭐", callback_data: `rres_${order.id}_${res.id}_2` }, { text: "3 ⭐", callback_data: `rres_${order.id}_${res.id}_3` }, { text: "4 ⭐", callback_data: `rres_${order.id}_${res.id}_4` }, { text: "5 ⭐", callback_data: `rres_${order.id}_${res.id}_5` }]] };
          await fetch('/api/notify', { method: 'POST', body: JSON.stringify({ targetId: uData.id, message: `😋 <b>Оцените блюда от ${order.restaurant_name}:</b>`, reply_markup: kb }) });
       }
-    } catch(e) {}
+    } catch(e) { console.error("Notify error:", e) }
   }
 
   const handleTake = async (order) => {
