@@ -578,7 +578,7 @@ async def show_active_order(callback: CallbackQuery):
             
         kb_arr.append([InlineKeyboardButton(text="🆘 Проблема с заказом", callback_data=f"sos_{order_id}")])
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
-        else: await callback.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
+        else: await callback.message.edit_text(text=reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_arr), parse_mode="HTML")
         await callback.answer()
     finally: await conn.close()
 
@@ -1198,6 +1198,8 @@ async def order_checker():
         conn = None
         try:
             conn = await get_db_conn()
+            
+            # 1. СНАЧАЛА ИЩЕМ НОВЫЕ ЗАКАЗЫ
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             for order in new_orders:
                 res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until FROM restaurants WHERE name = $1", order['restaurant_name'])
@@ -1234,13 +1236,17 @@ async def order_checker():
                 kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
                 
                 try:
+                    # Пытаемся отправить сообщение
                     if order['receipt_url']: await bot.send_photo(target, order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
                     else: await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
+                    
+                    # СТАВИМ ГАЛОЧКУ ТОЛЬКО ЕСЛИ ОТПРАВКА ПРОШЛА УСПЕШНО
                     await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
                 except Exception as e:
+                    # Если Telegram сбоит, мы просто пропускаем этот заказ. В следующем цикле бот попробует снова!
                     print(f"Ошибка отправки заказа {order['id']}: {e}")
 
-            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ
+            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ ЗАБЫТЫХ ЗАКАЗОВ
             alert_min = 3
             try:
                 val = await conn.fetchval("SELECT value FROM settings WHERE key = 'superadmin_alert_min'")
@@ -1250,7 +1256,7 @@ async def order_checker():
             lost_orders = await conn.fetch(f"SELECT id, restaurant_name FROM orders WHERE status = 'new' AND created_at < NOW() - INTERVAL '{alert_min} minutes' AND superadmin_notified = false")
             for lost in lost_orders:
                 try:
-                    await bot.send_message(MAIN_ADMIN_ID, f"🚨 <b>АВАРИЯ! Заказ №{lost['id']} ({lost['restaurant_name']}) висит без ответа уже более {alert_min} минут!</b>\n\nСвяжитесь с рестораном или вызовите заказ через панель.", parse_mode="HTML")
+                    await bot.send_message(MAIN_ADMIN_ID, f"🚨 <b>АВАРИЯ! Заказ №{lost['id']} ({lost['restaurant_name']}) висит без ответа уже более {alert_min} минут!</b>\n\nСвяжитесь с рестораном или проверьте вкладку 'Текущие заказы'.", parse_mode="HTML")
                     await conn.execute("UPDATE orders SET superadmin_notified = true WHERE id = $1", lost['id'])
                 except: pass
 
@@ -1438,37 +1444,78 @@ async def btn_courier_map(message: types.Message):
 async def btn_support(message: types.Message):
     await message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
 
-@dp.message(F.text == "📦 Текущие заказы")
-async def btn_active_orders(message: types.Message):
+# --- ПАГИНАЦИЯ АКТИВНЫХ ЗАКАЗОВ ---
+async def render_active_orders(tg_id, page=0):
+    PAGE_SIZE = 5 # Количество заказов на одной странице
     conn = await get_db_conn()
     try:
-        res = await conn.fetchrow("SELECT name FROM restaurants WHERE admin_tg_id = $1", message.from_user.id)
-        if not res and message.from_user.id != MAIN_ADMIN_ID:
-            return await message.answer("У вас нет доступа.")
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE admin_tg_id = $1", tg_id)
+        if not res and tg_id != MAIN_ADMIN_ID:
+            return "У вас нет доступа.", None
             
         query = "SELECT id, status, total_price, address FROM orders WHERE status NOT IN ('completed', 'cancelled', 'awaiting_payment', 'payment_pending')"
         args = []
         
-        if message.from_user.id != MAIN_ADMIN_ID:
+        if tg_id != MAIN_ADMIN_ID:
             query += " AND restaurant_name = $1"
             args.append(res['name'])
             
+        query += " ORDER BY id DESC" # Новые заказы будут сверху
+        
         orders = await conn.fetch(query, *args)
         
         if not orders:
-            return await message.answer("Сейчас активных заказов нет. Отдыхаем! ☕️")
+            return "Сейчас активных заказов нет. Отдыхаем! ☕️", None
             
-        text = "📋 <b>АКТИВНЫЕ ЗАКАЗЫ:</b>\n<i>Нажмите на кнопку, чтобы открыть карточку управления нужным заказом.</i>\n\n"
+        total_orders = len(orders)
+        total_pages = (total_orders + PAGE_SIZE - 1) // PAGE_SIZE
+        
+        if page >= total_pages: page = total_pages - 1
+        if page < 0: page = 0
+        
+        start_idx = page * PAGE_SIZE
+        end_idx = start_idx + PAGE_SIZE
+        page_orders = orders[start_idx:end_idx]
+        
+        text = f"📋 <b>АКТИВНЫЕ ЗАКАЗЫ (Стр. {page+1} из {total_pages}):</b>\n<i>Всего в работе: {total_orders} шт.</i>\n\n"
         kb_buttons = []
         
-        for o in orders:
+        for o in page_orders:
             status_emoji = "🆕" if o['status'] == 'new' else "👨‍🍳" if o['status'] == 'accepted' else "🛵"
             text += f"{status_emoji} <b>Заказ №{o['id']}</b> | {o['total_price']}₽\n📍 {o['address'][:30]}...\n\n"
             kb_buttons.append([InlineKeyboardButton(text=f"{status_emoji} Управление заказом №{o['id']}", callback_data=f"resend_{o['id']}")])
         
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="HTML")
+        # Добавляем кнопки перелистывания страниц
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"actpg_{page-1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"actpg_{page+1}"))
+            
+        if nav_buttons:
+            kb_buttons.append(nav_buttons)
+            
+        return text, InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     finally:
         await conn.close()
+
+@dp.message(F.text == "📦 Текущие заказы")
+async def btn_active_orders(message: types.Message):
+    text, kb = await render_active_orders(message.from_user.id, 0)
+    if kb:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(text, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("actpg_"))
+async def paginate_active_orders(callback: CallbackQuery):
+    page = int(callback.data.split("_")[1])
+    text, kb = await render_active_orders(callback.from_user.id, page)
+    if kb:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await callback.message.edit_text(text, parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("resend_"))
 async def resend_order_card(callback: CallbackQuery):
