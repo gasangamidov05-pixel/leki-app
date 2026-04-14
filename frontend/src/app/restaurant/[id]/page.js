@@ -126,7 +126,6 @@ export default function RestaurantMenu() {
     });
   };
 
-  // --- НОВАЯ УМНАЯ ЛОГИКА ДОСТАВКИ ---
   const updateDeliveryPrice = (coords) => {
     if (!restaurant?.lat || !restaurant?.lon) return;
 
@@ -134,14 +133,12 @@ export default function RestaurantMenu() {
 
     const ymaps = window.ymaps;
     if (ymaps && ymaps.route) {
-        // Прокладываем маршрут по автомобильным дорогам
         ymaps.route([ [restaurant.lat, restaurant.lon], coords ], { routingMode: 'driving' }).then(
             function (route) {
                 const distanceKm = route.getLength() / 1000;
                 calculatePriceLogic(distanceKm, "дорогам");
             },
             function (error) {
-                // Если Яндекс не смог проложить маршрут (сбой или точка в горах) - считаем по прямой
                 const distanceKm = getDistanceFromLatLonInKm(restaurant.lat, restaurant.lon, coords[0], coords[1]);
                 calculatePriceLogic(distanceKm, "прямой");
             }
@@ -167,16 +164,9 @@ export default function RestaurantMenu() {
     } else {
         setDeliveryError(''); 
         
-        // 1. Расчет платной дистанции (вычитаем бесплатные КМ)
         const chargeableDistance = Math.max(0, distance - FREE_KM);
-        
-        // 2. База + километраж
         let rawPrice = BASE + (chargeableDistance * KM_PRICE);
-        
-        // 3. Умножаем на спрос (час пик)
         rawPrice = rawPrice * SURGE;
-        
-        // 4. Добавляем погодный бонус (дождь/снег)
         rawPrice = rawPrice + WEATHER;
 
         setDeliveryPrice(Math.round(rawPrice));
@@ -184,7 +174,6 @@ export default function RestaurantMenu() {
     }
     setIsCalculating(false);
   };
-  // ------------------------------------
 
   const getLocation = () => {
     setIsCalculating(true);
@@ -436,12 +425,6 @@ export default function RestaurantMenu() {
                     <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
                   ) : (
                     <>
-                      {/* ОТОБРАЖЕНИЕ АКТИВНЫХ БОНУСОВ И МНОЖИТЕЛЕЙ */}
-                      {restaurant?.free_base_km > 0 && isAddressValid && (
-                         <div className="flex justify-between text-[10px] font-bold text-green-600">
-                            <span>Бесплатные км:</span><span>{restaurant.free_base_km} км</span>
-                         </div>
-                      )}
                       {restaurant?.surge_multiplier > 1.0 && isAddressValid && (
                          <div className="flex justify-between text-[10px] font-bold text-orange-500">
                             <span>Повышенный спрос:</span><span>x{restaurant.surge_multiplier}</span>
