@@ -195,6 +195,7 @@ async def cmd_superadmin(message: types.Message):
         "• <code>/pin_res ID</code> — Закрепить ТОП 🔥\n"
         "• <code>/set_buffer Секунды</code> — Задержка выхода\n"
         "• <code>/set_timeout Минуты</code> — Таймер Своей доставки ⏳\n"
+        "• <code>/set_alert Минуты</code> — Аварийный таймер 🚨\n"
         "• <code>/stats</code> — СТАТИСТИКА 📊\n\n"
         "<b>💰 УМНЫЕ ТАРИФЫ ДОСТАВКИ:</b>\n"
         "• <code>/set_city_price Город База Км</code>\n"
@@ -278,6 +279,18 @@ async def admin_set_timeout(message: types.Message):
     try:
         await conn.execute("INSERT INTO settings (key, value) VALUES ('self_delivery_timeout_min', $1) ON CONFLICT (key) DO UPDATE SET value = $1", str(mins))
         await message.answer(f"✅ Время ожидания курьера до тревоги ресторану: <b>{mins} мин</b>.", parse_mode="HTML")
+    finally: await conn.close()
+
+@dp.message(Command("set_alert"))
+async def admin_set_alert(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit(): return await message.answer("Формат: /set_alert 3 (в минутах)", parse_mode="HTML")
+    mins = int(args[1])
+    conn = await get_db_conn()
+    try:
+        await conn.execute("INSERT INTO settings (key, value) VALUES ('superadmin_alert_min', $1) ON CONFLICT (key) DO UPDATE SET value = $1", str(mins))
+        await message.answer(f"✅ Аварийный таймер для забытых заказов установлен на: <b>{mins} мин</b>.", parse_mode="HTML")
     finally: await conn.close()
 
 @dp.message(Command("stats"))
@@ -1058,7 +1071,7 @@ async def adm_edit_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     conn = await get_db_conn()
     try:
-        await conn.execute("UPDATE SET name = $1 WHERE id = $2", message.text, data['prod_id'])
+        await conn.execute("UPDATE products SET name = $1 WHERE id = $2", message.text, data['prod_id'])
         await message.answer("✅ Обновлено!")
         await state.clear()
         await cmd_admin(message, state)
@@ -1185,8 +1198,6 @@ async def order_checker():
         conn = None
         try:
             conn = await get_db_conn()
-            
-            # 1. СНАЧАЛА ИЩЕМ НОВЫЕ ЗАКАЗЫ
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             for order in new_orders:
                 res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until FROM restaurants WHERE name = $1", order['restaurant_name'])
@@ -1223,22 +1234,23 @@ async def order_checker():
                 kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
                 
                 try:
-                    # Пытаемся отправить сообщение
                     if order['receipt_url']: await bot.send_photo(target, order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
                     else: await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
-                    
-                    # СТАВИМ ГАЛОЧКУ ТОЛЬКО ЕСЛИ ОТПРАВКА ПРОШЛА УСПЕШНО
                     await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
                 except Exception as e:
-                    # Если Telegram сбоит, мы просто пропускаем этот заказ. В следующем цикле бот попробует снова!
                     print(f"Ошибка отправки заказа {order['id']}: {e}")
 
-            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ ЗАБЫТЫХ ЗАКАЗОВ
-            # Ищем заказы, которые висят в статусе 'new' больше 3 минут, даже если они "уведомлены"
-            lost_orders = await conn.fetch("SELECT id, restaurant_name FROM orders WHERE status = 'new' AND created_at < NOW() - INTERVAL '3 minutes' AND superadmin_notified = false")
+            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ
+            alert_min = 3
+            try:
+                val = await conn.fetchval("SELECT value FROM settings WHERE key = 'superadmin_alert_min'")
+                if val: alert_min = int(val)
+            except: pass
+            
+            lost_orders = await conn.fetch(f"SELECT id, restaurant_name FROM orders WHERE status = 'new' AND created_at < NOW() - INTERVAL '{alert_min} minutes' AND superadmin_notified = false")
             for lost in lost_orders:
                 try:
-                    await bot.send_message(MAIN_ADMIN_ID, f"🚨 <b>АВАРИЯ! Заказ №{lost['id']} ({lost['restaurant_name']}) висит без ответа уже более 3 минут!</b>\n\nСвяжитесь с рестораном или проверьте вкладку 'Текущие заказы'.", parse_mode="HTML")
+                    await bot.send_message(MAIN_ADMIN_ID, f"🚨 <b>АВАРИЯ! Заказ №{lost['id']} ({lost['restaurant_name']}) висит без ответа уже более {alert_min} минут!</b>\n\nСвяжитесь с рестораном или вызовите заказ через панель.", parse_mode="HTML")
                     await conn.execute("UPDATE orders SET superadmin_notified = true WHERE id = $1", lost['id'])
                 except: pass
 
@@ -1346,7 +1358,6 @@ async def handle_decision(callback: CallbackQuery):
             prep_time = int(data[3])
             ready_time = (datetime.now(MSK) + timedelta(minutes=prep_time)).strftime('%H:%M')
             
-            # --- ИСПРАВЛЕНИЕ: СОХРАНЯЕМ ВРЕМЯ ГОТОВНОСТИ В БАЗУ ---
             await conn.execute("UPDATE orders SET status = 'accepted', ready_time = $2 WHERE id = $1", order_id, ready_time)
             
             if client_id: 
@@ -1405,7 +1416,7 @@ async def handle_decision(callback: CallbackQuery):
 
 
 # ==========================================
-#           ОБРАБОТКА НИЖНЕГО МЕНЮ
+#           ОБРАБОТКА НИЖНЕГО МЕНЮ И RESEND
 # ==========================================
 
 @dp.message(F.text == "🏠 Панель управления")
@@ -1447,15 +1458,68 @@ async def btn_active_orders(message: types.Message):
         if not orders:
             return await message.answer("Сейчас активных заказов нет. Отдыхаем! ☕️")
             
-        text = "📋 <b>АКТИВНЫЕ ЗАКАЗЫ:</b>\n\n"
+        text = "📋 <b>АКТИВНЫЕ ЗАКАЗЫ:</b>\n<i>Нажмите на кнопку, чтобы открыть карточку управления нужным заказом.</i>\n\n"
+        kb_buttons = []
+        
         for o in orders:
             status_emoji = "🆕" if o['status'] == 'new' else "👨‍🍳" if o['status'] == 'accepted' else "🛵"
             text += f"{status_emoji} <b>Заказ №{o['id']}</b> | {o['total_price']}₽\n📍 {o['address'][:30]}...\n\n"
+            kb_buttons.append([InlineKeyboardButton(text=f"{status_emoji} Управление заказом №{o['id']}", callback_data=f"resend_{o['id']}")])
         
-        await message.answer(text, parse_mode="HTML")
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="HTML")
     finally:
         await conn.close()
 
+@dp.callback_query(F.data.startswith("resend_"))
+async def resend_order_card(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[1])
+    conn = await get_db_conn()
+    try:
+        order = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order: return await callback.answer("Заказ не найден", show_alert=True)
+        
+        u = json.loads(order['user_data'])
+        if isinstance(u, str): u = json.loads(u)
+        client_id = u.get('id', 0)
+        
+        items = json.loads(order['items'])
+        if isinstance(items, str): items = json.loads(items)
+        items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
+        
+        items_sum = sum([i['price'] * i['count'] for i in items])
+        delivery_fee = order['total_price'] - items_sum
+        
+        if order['status'] == 'new':
+            text = f"🚨 <b>ПОВТОР: НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ ОПЛАТА КУРЬЕРУ: {delivery_fee} ₽"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Принять (Выбрать время)", callback_data=f"time_{order['id']}_{client_id}")],
+                [InlineKeyboardButton(text="💬 Написать клиенту", url=f"tg://user?id={client_id}")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"no_{order['id']}_{client_id}")]
+            ])
+            
+        elif order['status'] == 'accepted':
+            text = f"⏳ <b>ПОВТОР: ЗАКАЗ №{order['id']} (ГОТОВИТСЯ)</b>\n\n📍 {order['address']}\n📞 <code>{order['phone']}</code>\n\n{items_text}"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚗 Доставим своими силами", callback_data=f"selfdeliv_{order['id']}")],
+                [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"no_{order['id']}_{client_id}")]
+            ])
+            
+        elif order['status'] == 'delivering' and order['courier_tg_id'] == -1:
+            if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
+            else: nav_url = "https://yandex.ru/maps/?text=" + urllib.parse.quote(order['address'].split(', кв/офис')[0])
+            text = f"🚗 <b>ПОВТОР: СВОЯ ДОСТАВКА №{order['id']}</b>\n\n📍 {order['address']}\n📞 <code>{order['phone']}</code>"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗺 Открыть маршрут", url=nav_url)],
+                [InlineKeyboardButton(text="🏁 Заказ доставлен клиенту", callback_data=f"done_{order['id']}")]
+            ])
+        else:
+            text = f"ℹ️ <b>Инфо о заказе №{order['id']}</b>\nСтатус: {order['status']}\n📍 {order['address']}\nКурьер ID: {order['courier_tg_id']}"
+            kb = None
+
+        if order['receipt_url']: await callback.message.answer_photo(order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
+        else: await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await callback.answer()
+    finally: await conn.close()
 
 async def main():
     asyncio.create_task(order_checker())
