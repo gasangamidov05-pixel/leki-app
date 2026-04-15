@@ -24,19 +24,36 @@ export default function Home() {
     if (savedCity) setSelectedCity(savedCity)
 
     async function fetchData() {
-      const now = new Date().toISOString();
+      const now = new Date().toISOString()
+      const nowMs = new Date().getTime()
 
+      // 1. Загружаем рестораны
       const { data: resData } = await supabase
         .from('restaurants')
         .select('*, restaurant_ratings(avg_rating)')
         .eq('is_active', true)
-        .gt('paid_until', now);
+        .gt('paid_until', now)
+
+      // 2. Загружаем активные и ПУБЛИЧНЫЕ промокоды
+      const { data: promoData } = await supabase
+        .from('promotions')
+        .select('*')
+        .eq('is_active', true)
+        .eq('is_secret', false)
 
       if (resData) {
-        const formattedRestaurants = resData.map(r => ({
-           ...r,
-           rating: r.restaurant_ratings?.[0]?.avg_rating || '5.0'
-        }));
+        // Отфильтровываем просроченные акции
+        const validPromos = (promoData || []).filter(p => !p.expires_at || new Date(p.expires_at).getTime() > nowMs)
+
+        const formattedRestaurants = resData.map(r => {
+           // Прикрепляем акции к конкретному ресторану
+           const rPromos = validPromos.filter(p => p.restaurant_name === r.name)
+           return {
+             ...r,
+             rating: r.restaurant_ratings?.[0]?.avg_rating || '5.0',
+             promotions: rPromos
+           }
+        });
         setRestaurants(formattedRestaurants)
         
         const cities = ['🌍 Все города', ...new Set(formattedRestaurants.map(r => r.city).filter(Boolean))]
@@ -193,7 +210,7 @@ export default function Home() {
               const showPin = isSpecificCitySelected && restaurant.is_pinned;
 
               return (
-                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all flex flex-col ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
@@ -209,23 +226,41 @@ export default function Home() {
                       <span className="text-xs font-bold text-gray-400">📍 {restaurant.delivery_radius} км</span>
                       {restaurant.working_hours && (
                           <span className="text-[10px] font-bold text-gray-400 mt-1 bg-gray-50 px-2 py-1 rounded-md border border-gray-100">
-                             🕒 {restaurant.working_hours}
+                              🕒 {restaurant.working_hours}
                           </span>
                       )}
                     </div>
                   </div>
-                  
-                  {!isFullyOpen ? (
-                     <div className="w-full bg-red-50 text-red-600 font-black text-center py-4 rounded-2xl border-2 border-red-100">
-                        {!isOpenNow ? (restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО') : 'НЕТ СВОБОДНЫХ КУРЬЕРОВ'}
-                     </div>
-                  ) : (
-                    <Link href={`/restaurant/${restaurant.id}`} className="w-full">
-                      <button className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all shadow-lg shadow-blue-100 text-lg">
-                        Перейти к меню
-                      </button>
-                    </Link>
+
+                  {/* БЛОК ПРОМОКОДОВ И АКЦИЙ НА КАРТОЧКЕ */}
+                  {restaurant.promotions?.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                          {restaurant.promotions.map(p => {
+                              const isDiscount = p.reward_type === 'discount';
+                              const text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
+                              const minText = p.min_cart_total > 0 ? ` от ${p.min_cart_total}₽` : '';
+                              return (
+                                  <span key={p.id} className={`text-[10px] font-black px-2.5 py-1 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
+                                      {text}{minText}
+                                  </span>
+                              )
+                          })}
+                      </div>
                   )}
+                  
+                  <div className="mt-auto">
+                    {!isFullyOpen ? (
+                        <div className="w-full bg-red-50 text-red-600 font-black text-center py-4 rounded-2xl border-2 border-red-100">
+                          {!isOpenNow ? (restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО') : 'НЕТ СВОБОДНЫХ КУРЬЕРОВ'}
+                        </div>
+                    ) : (
+                      <Link href={`/restaurant/${restaurant.id}`} className="w-full">
+                        <button className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all shadow-lg shadow-blue-100 text-lg">
+                          Перейти к меню
+                        </button>
+                      </Link>
+                    )}
+                  </div>
                 </div>
               )
             })
