@@ -557,26 +557,26 @@ export default function RestaurantMenu() {
               </div>
 
               {/* ПОЛЕ ВВОДА ПРОМОКОДА */}
-              <div className="mb-6 bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                  <div className="flex gap-2 mb-1">
+              <div className="mb-6 bg-gray-50 p-3 rounded-2xl border border-gray-100">
+                  <div className="flex gap-2">
                       <input 
                           type="text" 
                           placeholder="Промокод" 
                           value={promoInput}
                           onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
                           disabled={!!activePromo}
-                          className="flex-1 px-4 py-2 border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400"
+                          className="w-full min-w-0 px-3 py-2 border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400 text-sm"
                       />
                       {activePromo ? (
-                          <button onClick={removePromo} className="bg-red-100 text-red-600 px-4 rounded-xl font-bold active:scale-95 text-sm shadow-sm">✕ ОТМЕНА</button>
+                          <button onClick={removePromo} className="shrink-0 bg-red-100 text-red-600 px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-sm">✕ ОТМЕНА</button>
                       ) : (
-                          <button onClick={applyPromo} className="bg-gray-900 text-white px-4 rounded-xl font-bold active:scale-95 text-sm shadow-md">ПРИМЕНИТЬ</button>
+                          <button onClick={applyPromo} className="shrink-0 bg-gray-900 text-white px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-md">ПРИМЕНИТЬ</button>
                       )}
                   </div>
                   {promoError && <p className="text-red-500 text-xs font-bold mt-2 pl-1">{promoError}</p>}
                   {activePromo && (
                       <p className="text-green-600 text-xs font-black mt-2 pl-1 flex items-center gap-1">
-                          ✅ Промокод применен! {activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : `Подарок: ${activePromo.gift_name}`}
+                          ✅ Успех! {activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : `Подарок: ${activePromo.gift_name}`}
                       </p>
                   )}
               </div>
