@@ -64,7 +64,6 @@ export default function RestaurantMenu() {
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
-  // ВЫТЯГИВАЕМ ДАННЫЕ КЛИЕНТА ИЗ ПАМЯТИ
   useEffect(() => {
     const savedPhone = localStorage.getItem('leki_phone');
     const savedApt = localStorage.getItem('leki_apt');
@@ -280,6 +279,10 @@ export default function RestaurantMenu() {
   const isMinOrderActive = restaurant?.is_min_order_active;
   const canCheckout = !isMinOrderActive || totalSumRaw >= minOrderAmount;
 
+  // ЛОГИКА БЕСПЛАТНОЙ ДОСТАВКИ
+  const isFreeDelivery = activePromo?.reward_type === 'free_delivery';
+  const finalDeliveryPrice = isFreeDelivery ? 0 : deliveryPrice;
+
   const applyPromo = () => {
       setPromoError('');
       if (!promoInput.trim()) return;
@@ -306,7 +309,7 @@ export default function RestaurantMenu() {
       }
 
       if (promo.min_cart_total > 0 && totalSumRaw < promo.min_cart_total) {
-          setPromoError(`Минимальная сумма заказа: ${promo.min_cart_total} ₽`);
+          setPromoError(`Минимальная сумма: ${promo.min_cart_total} ₽`);
           setActivePromo(null);
           return;
       }
@@ -345,13 +348,18 @@ export default function RestaurantMenu() {
       let fullAddressStr = address;
       if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
-      fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
+      
+      // Если бесплатная доставка, добавляем скрытый реальный тариф
+      fullAddressStr += `\n🚚 Доставка: ${finalDeliveryPrice} ₽`;
+      if (isFreeDelivery) fullAddressStr += ` (Тариф: ${deliveryPrice} ₽)`;
       
       if (activePromo) {
           if (activePromo.reward_type === 'discount') {
               fullAddressStr += `\n🎟 Промокод: ${activePromo.code} (-${activePromo.discount_rub}₽)`;
-          } else {
-              fullAddressStr += `\n🎁 ПОДАРОК ПО ПРОМОКОДУ: ${activePromo.gift_name} (${activePromo.code})`;
+          } else if (activePromo.reward_type === 'gift') {
+              fullAddressStr += `\n🎁 ПОДАРОК: ${activePromo.gift_name} (${activePromo.code})`;
+          } else if (activePromo.reward_type === 'free_delivery') {
+              fullAddressStr += `\n🎟 Промокод: ${activePromo.code} (Бесплатная доставка)`;
           }
       }
 
@@ -373,7 +381,7 @@ export default function RestaurantMenu() {
       const orderData = {
         restaurant_name: restaurant?.name,
         items: orderItems,
-        total_price: totalSumDiscounted + deliveryPrice, 
+        total_price: totalSumDiscounted + finalDeliveryPrice, 
         status: isYookassa ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
@@ -390,7 +398,6 @@ export default function RestaurantMenu() {
           await supabase.from('promotions').update({ used_count: activePromo.used_count + 1 }).eq('id', activePromo.id);
       }
 
-      // СОХРАНЯЕМ ДАННЫЕ В ПАМЯТЬ ПОСЛЕ УСПЕШНОГО ЗАКАЗА
       localStorage.setItem('leki_phone', phone);
       localStorage.setItem('leki_apt', apartment);
       localStorage.setItem('leki_ent', entrance);
@@ -582,7 +589,11 @@ export default function RestaurantMenu() {
                   {promoError && <p className="text-red-500 text-xs font-bold mt-2 pl-1">{promoError}</p>}
                   {activePromo && (
                       <p className="text-green-600 text-xs font-black mt-2 pl-1 flex items-center gap-1">
-                          ✅ Успех! {activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : `Подарок: ${activePromo.gift_name}`}
+                          ✅ Успех! {
+                            activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : 
+                            activePromo.reward_type === 'free_delivery' ? 'Бесплатная доставка!' : 
+                            `Подарок: ${activePromo.gift_name}`
+                          }
                       </p>
                   )}
               </div>
@@ -590,10 +601,14 @@ export default function RestaurantMenu() {
               {activePromo && (
                   <div className="flex justify-between items-center bg-green-50 p-4 rounded-2xl mb-4 border border-green-100">
                       <span className="font-black text-sm text-green-800">
-                          {activePromo.reward_type === 'discount' ? 'Скидка по промокоду' : '🎁 Ваш подарок'}
+                          {activePromo.reward_type === 'discount' ? 'Скидка по промокоду' : 
+                           activePromo.reward_type === 'free_delivery' ? 'Промокод на доставку' : 
+                           '🎁 Ваш подарок'}
                       </span>
                       <span className="font-black text-green-700">
-                          {activePromo.reward_type === 'discount' ? `-${activePromo.discount_rub} ₽` : activePromo.gift_name}
+                          {activePromo.reward_type === 'discount' ? `-${activePromo.discount_rub} ₽` : 
+                           activePromo.reward_type === 'free_delivery' ? 'Бесплатно' : 
+                           activePromo.gift_name}
                       </span>
                   </div>
               )}
@@ -671,7 +686,7 @@ export default function RestaurantMenu() {
                       <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
                     </div>
                     <p className="text-xs font-bold text-gray-500">
-                      Переведите <span className="text-blue-600">{totalSumDiscounted + deliveryPrice} ₽</span> и прикрепите чек:
+                      Переведите <span className="text-blue-600">{totalSumDiscounted + finalDeliveryPrice} ₽</span> и прикрепите чек:
                     </p>
                     <input 
                       type="file" 
@@ -699,10 +714,15 @@ export default function RestaurantMenu() {
                       )}
 
                       <div className="flex justify-between text-sm font-bold text-blue-800 border-t border-blue-100 pt-2">
-                          <span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span>
+                          <span>Доставка {isCalculating && '...'}:</span>
+                          <span>
+                            {isAddressValid ? (
+                              isFreeDelivery ? <><span className="line-through text-blue-300 mr-2">{deliveryPrice} ₽</span>0 ₽</> : `${deliveryPrice} ₽`
+                            ) : '--'}
+                          </span>
                       </div>
                       <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
-                          <span>Итого к оплате:</span><span>{isAddressValid ? totalSumDiscounted + deliveryPrice : totalSumDiscounted} ₽</span>
+                          <span>Итого к оплате:</span><span>{isAddressValid ? totalSumDiscounted + finalDeliveryPrice : totalSumDiscounted} ₽</span>
                       </div>
                     </>
                   )}

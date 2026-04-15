@@ -17,7 +17,6 @@ TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
 MAIN_ADMIN_ID = 5340841151 
 
-# ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
 SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
 SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
@@ -41,13 +40,23 @@ class AdminStates(StatesGroup):
 
 class CourierStates(StatesGroup): change_city = State()
 
-# --- ФИЛЬТР АДРЕСА ---
+# --- ФИЛЬТР АДРЕСА И РАСЧЕТ ЗАРПЛАТЫ ---
 def clean_address(address_str, is_salary=False):
     if not address_str: return ""
     if is_salary:
-        # Вырезаем строку с доставкой из текста адреса
-        address_str = re.sub(r'\n🚚 Доставка: \d+ ₽', '', address_str)
+        address_str = re.sub(r'\n🚚 Доставка: .*', '', address_str)
     return address_str
+
+def get_delivery_fee(order, items):
+    if not order.get('address'): return 0
+    # Ищем скрытый тариф (если была бесплатная доставка)
+    fee_match_tariff = re.search(r'Тариф: (\d+) ₽', order['address'])
+    if fee_match_tariff: return int(fee_match_tariff.group(1))
+    # Иначе берем стандартную строку
+    fee_match_del = re.search(r'🚚 Доставка: (\d+) ₽', order['address'])
+    if fee_match_del: return int(fee_match_del.group(1))
+    # Резервный вариант
+    return max(0, order['total_price'] - sum([i['price'] * i['count'] for i in items]))
 
 # --- КЛАВИАТУРЫ МЕНЮ ---
 def get_admin_main_kb():
@@ -527,13 +536,12 @@ async def get_courier_panel_text(conn, tg_id):
     
     today_earned, today_count = 0, 0
     try:
-        rows = await conn.fetch("SELECT items, total_price FROM orders WHERE courier_tg_id = $1 AND status = 'completed' AND DATE(created_at) = CURRENT_DATE", tg_id)
+        rows = await conn.fetch("SELECT items, total_price, address FROM orders WHERE courier_tg_id = $1 AND status = 'completed' AND DATE(created_at) = CURRENT_DATE", tg_id)
         today_count = len(rows)
         for r in rows:
             items_data = json.loads(r['items'])
             if isinstance(items_data, str): items_data = json.loads(items_data)
-            items_sum = sum([i['price'] * i['count'] for i in items_data])
-            today_earned += (r['total_price'] - items_sum)
+            today_earned += get_delivery_fee(r, items_data)
     except: pass
     
     if is_own and is_salary:
@@ -634,14 +642,19 @@ async def cour_toggle_status(callback: CallbackQuery):
             
             if is_own:
                 res_name = await conn.fetchval("SELECT name FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
-                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address FROM orders o WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.restaurant_name = $1", res_name)
+                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address, o.total_price, o.items FROM orders o WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.restaurant_name = $1", res_name)
             else:
-                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND r.city = $1 AND r.can_have_own_couriers = false", c['city'])
+                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address, o.total_price, o.items, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND r.city = $1 AND r.can_have_own_couriers = false", c['city'])
             
             for p_order in pending_orders:
                 kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{p_order['id']}")]])
                 addr = clean_address(p_order['address'], is_salary) if is_own else "📍 [Скрыт до принятия заказа]"
-                try: await bot.send_message(callback.from_user.id, f"🚨 <b>Свободный заказ №{p_order['id']}</b>\nИз: {p_order['restaurant_name']}\nКуда: {addr}", reply_markup=kb_c, parse_mode="HTML")
+                
+                items = json.loads(p_order['items']) if isinstance(p_order['items'], str) else p_order['items']
+                delivery_fee = get_delivery_fee(p_order, items)
+                fee_text = "" if (is_own and is_salary) else f"\n💵 <b>Оплата за доставку: {delivery_fee} ₽</b>"
+                
+                try: await bot.send_message(callback.from_user.id, f"🚨 <b>Свободный заказ №{p_order['id']}</b>\nИз: {p_order['restaurant_name']}\nКуда: {addr}{fee_text}", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
         else:
             buffer_sec = 60
@@ -693,7 +706,7 @@ async def show_active_order(callback: CallbackQuery):
 
         items = json.loads(order['items'])
         if isinstance(items, str): items = json.loads(items)
-        delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
+        delivery_fee = get_delivery_fee(order, items)
         kb_arr = []
         text = ""
         if order['status'] == 'taken':
@@ -750,12 +763,12 @@ async def take_order(callback: CallbackQuery):
     try:
         c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
         is_own = c and c['employer_restaurant_id'] is not None
-        is_salary = False
         
         if is_own:
             salary_val = await conn.fetchval("SELECT is_own_courier_salary FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
             is_salary = salary_val if salary_val is not None else True
         else:
+            is_salary = False
             active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived')", callback.from_user.id)
             if active_count >= 2:
                 return await callback.answer("🛑 ЛИМИТ! Вы не можете взять больше 2-х заказов одновременно.", show_alert=True)
@@ -774,7 +787,7 @@ async def take_order(callback: CallbackQuery):
         
         items = json.loads(order['items'])
         if isinstance(items, str): items = json.loads(items)
-        delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
+        delivery_fee = get_delivery_fee(order, items)
         res_coords = await conn.fetchrow("SELECT lat, lon FROM restaurants WHERE name = $1", order['restaurant_name'])
         
         if res_coords and res_coords['lat']: nav_url = f"https://yandex.ru/maps/?pt={res_coords['lon']},{res_coords['lat']}&z=18&l=map"
@@ -1195,7 +1208,10 @@ async def adm_promo_menu(callback: CallbackQuery):
         for p in promos:
             status = "✅" if p['is_active'] else "🚫"
             secret = " 🤫" if p['is_secret'] else ""
-            val = f"-{p['discount_rub']}₽" if p['reward_type'] == 'discount' else f"🎁 {p['gift_name'][:10]}.."
+            if p['reward_type'] == 'discount': val = f"-{p['discount_rub']}₽"
+            elif p['reward_type'] == 'gift': val = f"🎁 {p['gift_name'][:10]}.."
+            elif p['reward_type'] == 'free_delivery': val = "🚚 Беспл. доставка"
+            else: val = "Акция"
             kb.append([InlineKeyboardButton(text=f"{status} {p['code']} | {val}{secret}", callback_data=f"adm_pedit_{p['id']}_{res_id}")])
             
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
@@ -1209,7 +1225,8 @@ async def adm_promo_add(callback: CallbackQuery, state: FSMContext):
     await state.update_data(promo_res_id=res_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💵 Скидка (в рублях)", callback_data="ptype_discount")],
-        [InlineKeyboardButton(text="🎁 Блюдо в подарок", callback_data="ptype_gift")]
+        [InlineKeyboardButton(text="🎁 Блюдо в подарок", callback_data="ptype_gift")],
+        [InlineKeyboardButton(text="🚚 Бесплатная доставка", callback_data="ptype_freedelivery")]
     ])
     await callback.message.edit_text("Выберите тип акции:", reply_markup=kb)
     await callback.answer()
@@ -1217,7 +1234,10 @@ async def adm_promo_add(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("ptype_"))
 async def adm_promo_type(callback: CallbackQuery, state: FSMContext):
     ptype = callback.data.split("_")[1]
-    await state.update_data(promo_type=ptype)
+    if ptype == 'freedelivery':
+        await state.update_data(promo_type='free_delivery')
+    else:
+        await state.update_data(promo_type=ptype)
     await state.set_state(AdminStates.promo_code)
     await callback.message.edit_text("Отправьте слово-промокод (на английском, без пробелов).\nПример: <code>LUCKY2026</code> или <code>MINUS300</code>", parse_mode="HTML")
     await callback.answer()
@@ -1228,11 +1248,16 @@ async def adm_promo_code(message: types.Message, state: FSMContext):
     await state.update_data(promo_code=code)
     data = await state.get_data()
     
-    await state.set_state(AdminStates.promo_value)
     if data['promo_type'] == 'discount':
+        await state.set_state(AdminStates.promo_value)
         await message.answer("Введите сумму скидки <b>в рублях</b> (только цифры):\nПример: <code>300</code>", parse_mode="HTML")
-    else:
+    elif data['promo_type'] == 'gift':
+        await state.set_state(AdminStates.promo_value)
         await message.answer("Введите <b>название блюда</b>, которое пойдет в подарок:\nПример: <code>Пицца Пепперони 25см</code>", parse_mode="HTML")
+    elif data['promo_type'] == 'free_delivery':
+        await state.update_data(promo_value=0)
+        await state.set_state(AdminStates.promo_min)
+        await message.answer("Введите <b>минимальную сумму заказа</b> для бесплатной доставки (0 если без минималки):\nПример: <code>1500</code>", parse_mode="HTML")
 
 @dp.message(AdminStates.promo_value)
 async def adm_promo_value(message: types.Message, state: FSMContext):
@@ -1298,7 +1323,11 @@ async def adm_promo_edit(callback: CallbackQuery):
     try:
         p = await conn.fetchrow("SELECT * FROM promotions WHERE id = $1", p_id)
         
-        val = f"Скидка {p['discount_rub']}₽" if p['reward_type'] == 'discount' else f"Подарок: {p['gift_name']}"
+        if p['reward_type'] == 'discount': val = f"Скидка {p['discount_rub']}₽"
+        elif p['reward_type'] == 'gift': val = f"Подарок: {p['gift_name']}"
+        elif p['reward_type'] == 'free_delivery': val = "Бесплатная доставка"
+        else: val = "Акция"
+            
         lim = f"{p['used_count']} / {p['usage_limit']}" if p['usage_limit'] else f"{p['used_count']} (безлимит)"
         sec = "Да 🤫" if p['is_secret'] else "Нет 📢"
         
@@ -1781,8 +1810,7 @@ async def order_checker():
                 items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
                 city_name = res_info['city'] if res_info else '-'
                 
-                items_sum = sum([i['price'] * i['count'] for i in items])
-                delivery_fee = order['total_price'] - items_sum
+                delivery_fee = get_delivery_fee(order, items)
                 
                 is_own_delivery = res_info.get('can_have_own_couriers') if res_info else False
                 if is_own_delivery:
@@ -1843,7 +1871,6 @@ async def stuck_order_checker():
                 if val: timeout_min = int(val)
             except: pass
             
-            # ВАЖНО: Исключаем рестораны, у которых есть право иметь своих курьеров, им тревога не нужна
             stuck_orders = await conn.fetch(f"SELECT o.id, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.self_delivery_notified = false AND r.can_have_own_couriers = false AND o.created_at < NOW() - INTERVAL '{timeout_min} minutes'")
             
             for o in stuck_orders:
@@ -1943,7 +1970,7 @@ async def handle_decision(callback: CallbackQuery):
             items = json.loads(order_info['items'])
             if isinstance(items, str): items = json.loads(items)
             
-            delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
+            delivery_fee = get_delivery_fee(order_info, items)
             
             is_own_delivery = order_info['can_have_own_couriers']
             salary_val = order_info.get('is_own_courier_salary')
@@ -1962,11 +1989,13 @@ async def handle_decision(callback: CallbackQuery):
                 if is_own_delivery:
                     prefix = "🚨 Новый заказ"
                     fee_text = "" if is_salary else f"\n💵 <b>Оплата за доставку: {delivery_fee} ₽</b>"
+                    addr = clean_address(order_info['address'], is_salary)
                 else:
                     prefix = "🚨 Новый заказ" if c['is_active'] else "🆘 ГОРЯЩИЙ ЗАКАЗ! На линии никого нет, выручай!"
                     fee_text = f"\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>"
+                    addr = "📍 [Скрыт до принятия заказа]"
                     
-                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]{fee_text}\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
+                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: {addr}{fee_text}\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
@@ -2002,11 +2031,9 @@ async def handle_decision(callback: CallbackQuery):
         await conn.close()
         await callback.answer()
 
-
 # ==========================================
 #           ОБРАБОТКА НИЖНЕГО МЕНЮ И RESEND
 # ==========================================
-
 @dp.message(F.text == "🏠 Панель управления")
 async def btn_admin_panel(message: types.Message, state: FSMContext):
     await cmd_admin(message, state)
@@ -2147,8 +2174,7 @@ async def resend_order_card(callback: CallbackQuery):
         if isinstance(items, str): items = json.loads(items)
         items_text = "".join([f"▫️ {i['name']} x {i['count']}\n" for i in items])
         
-        items_sum = sum([i['price'] * i['count'] for i in items])
-        delivery_fee = order['total_price'] - items_sum
+        delivery_fee = get_delivery_fee(order, items)
         
         if order['status'] == 'new':
             text = f"🚨 <b>ПОВТОР: НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ ОПЛАТА КУРЬЕРУ: {delivery_fee} ₽"
