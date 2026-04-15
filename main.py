@@ -1007,8 +1007,7 @@ async def adm_own_pay_toggle(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE restaurants SET is_own_courier_salary = NOT COALESCE(is_own_courier_salary, true) WHERE id = $1", res_id)
-        callback.data = f"adm_own_couriers_{res_id}"
-        await adm_own_couriers_list(callback)
+        await adm_own_couriers_list(callback.model_copy(update={"data": f"adm_own_couriers_{res_id}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_add_own_cour_"))
@@ -1048,8 +1047,7 @@ async def adm_del_own_cour(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("DELETE FROM couriers WHERE tg_id = $1", c_tg_id)
-        callback.data = f"adm_own_couriers_{res_id}"
-        await adm_own_couriers_list(callback)
+        await adm_own_couriers_list(callback.model_copy(update={"data": f"adm_own_couriers_{res_id}"}))
     finally: await conn.close()
 
 
@@ -1077,9 +1075,7 @@ async def adm_min_toggle(callback: CallbackQuery):
     conn = await get_db_conn()
     await conn.execute("UPDATE restaurants SET is_min_order_active = NOT is_min_order_active WHERE id = $1", res_id)
     await conn.close()
-    
-    callback.data = f"adm_min_order_{res_id}"
-    await adm_min_order_menu(callback)
+    await adm_min_order_menu(callback.model_copy(update={"data": f"adm_min_order_{res_id}"}))
 
 @dp.callback_query(F.data.startswith("adm_min_edit_"))
 async def adm_min_edit_start(callback: CallbackQuery, state: FSMContext):
@@ -1309,9 +1305,7 @@ async def adm_promo_finish(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"✅ Промокод <b>{data['promo_code']}</b> успешно создан!", parse_mode="HTML")
         await state.clear()
         
-        # Возвращаем в меню
-        callback.data = f"adm_promo_{data['promo_res_id']}"
-        await adm_promo_menu(callback)
+        await adm_promo_menu(callback.model_copy(update={"data": f"adm_promo_{data['promo_res_id']}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_pedit_"))
@@ -1349,8 +1343,7 @@ async def adm_promo_tgl(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE promotions SET is_active = NOT is_active WHERE id = $1", p_id)
-        callback.data = f"adm_pedit_{p_id}_{res_id}"
-        await adm_promo_edit(callback)
+        await adm_promo_edit(callback.model_copy(update={"data": f"adm_pedit_{p_id}_{res_id}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_pdel_"))
@@ -1361,8 +1354,7 @@ async def adm_promo_del(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("DELETE FROM promotions WHERE id = $1", p_id)
-        callback.data = f"adm_promo_{res_id}"
-        await adm_promo_menu(callback)
+        await adm_promo_menu(callback.model_copy(update={"data": f"adm_promo_{res_id}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_sd_"))
@@ -1470,8 +1462,7 @@ async def adm_toggle_pay(callback: CallbackQuery):
         res = await conn.fetchrow("SELECT payment_method FROM restaurants WHERE id = $1", res_id)
         new_method = 'yookassa' if (res.get('payment_method') or 'manual') == 'manual' else 'manual'
         await conn.execute("UPDATE restaurants SET payment_method = $1 WHERE id = $2", new_method, res_id)
-        callback.data = f"adm_payment_{res_id}"
-        await adm_payment_menu(callback)
+        await adm_payment_menu(callback.model_copy(update={"data": f"adm_payment_{res_id}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_shopid_"))
@@ -1648,8 +1639,7 @@ async def adm_mod_clear(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
         await conn.execute("UPDATE products SET modifiers = '[]'::jsonb WHERE id = $1", prod_id)
-        callback.data = f"adm_p_{prod_id}"
-        await admin_product_menu(callback)
+        await admin_product_menu(callback.model_copy(update={"data": f"adm_p_{prod_id}"}))
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_ename_"))
@@ -2031,9 +2021,11 @@ async def handle_decision(callback: CallbackQuery):
         await conn.close()
         await callback.answer()
 
+
 # ==========================================
 #           ОБРАБОТКА НИЖНЕГО МЕНЮ И RESEND
 # ==========================================
+
 @dp.message(F.text == "🏠 Панель управления")
 async def btn_admin_panel(message: types.Message, state: FSMContext):
     await cmd_admin(message, state)
@@ -2151,7 +2143,7 @@ async def btn_active_orders(message: types.Message):
 @dp.callback_query(F.data.startswith("actpg_"))
 async def paginate_active_orders(callback: CallbackQuery):
     page = int(callback.data.split("_")[1])
-    text, kb = await render_active_orders(callback.from_user.id, page)
+    text, kb = await render_active_orders(callback.fromuser.id, page)
     if kb:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     else:
