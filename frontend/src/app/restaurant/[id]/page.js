@@ -17,7 +17,6 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-// Помощник для безопасного чтения JSON добавок
 const parseMods = (modsRaw) => {
     if (!modsRaw) return [];
     if (typeof modsRaw === 'string') {
@@ -33,18 +32,24 @@ export default function RestaurantMenu() {
   
   const [restaurant, setRestaurant] = useState(null)
   const [products, setProducts] = useState([])
+  const [promotions, setPromotions] = useState([]) // Храним промокоды заведения
   
-  // КОРЗИНА 2.0 (теперь хранит полные объекты с добавками)
   const [cart, setCart] = useState({})
-  const [selectedProduct, setSelectedProduct] = useState(null) // Блюдо, для которого открыто окно модификаторов
-  const [selectedMods, setSelectedMods] = useState([]) // Временный массив выбранных добавок в окне
+  const [selectedProduct, setSelectedProduct] = useState(null) 
+  const [selectedMods, setSelectedMods] = useState([]) 
   
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
+  const [hasPreviousOrders, setHasPreviousOrders] = useState(false) // Проверка для первого заказа
 
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
+  
+  // ПРОМОКОД СТЕЙТЫ
+  const [promoInput, setPromoInput] = useState('')
+  const [activePromo, setActivePromo] = useState(null)
+  const [promoError, setPromoError] = useState('')
   
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -62,11 +67,35 @@ export default function RestaurantMenu() {
 
   useEffect(() => {
     async function fetchData() {
+      // 1. Загружаем Ресторан и Меню
       const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
       const { data: ratingData } = await supabase.from('restaurant_ratings').select('avg_rating').eq('restaurant_id', params.id).maybeSingle()
       setRestaurant({...res, rating: ratingData?.avg_rating || '5.0'})
       const { data: prod } = await supabase.from('products').select('*').eq('restaurant_id', params.id).order('id')
       setProducts(prod || [])
+
+      // 2. Загружаем Промокоды (активные, не истекшие)
+      if (res?.name) {
+          const nowMs = new Date().getTime();
+          const { data: promos } = await supabase.from('promotions').select('*').eq('restaurant_name', res.name).eq('is_active', true);
+          if (promos) {
+             const validPromos = promos.filter(p => !p.expires_at || new Date(p.expires_at).getTime() > nowMs);
+             setPromotions(validPromos);
+          }
+      }
+
+      // 3. Проверяем, были ли заказы ранее (для скидок на первый заказ)
+      const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      if (tgUser?.id) {
+          const { data: pastOrders } = await supabase.from('orders').select('id, user_data').limit(10);
+          if (pastOrders) {
+             const userOrders = pastOrders.filter(o => {
+                 const uData = typeof o.user_data === 'string' ? JSON.parse(o.user_data) : o.user_data;
+                 return uData?.id === tgUser.id;
+             });
+             if (userOrders.length > 0) setHasPreviousOrders(true);
+          }
+      }
     }
     fetchData()
   }, [params.id]);
@@ -185,7 +214,6 @@ export default function RestaurantMenu() {
     setPhone(formatted);
   };
 
-  // --- ЛОГИКА ДОБАВЛЕНИЯ В КОРЗИНУ С ДОБАВКАМИ ---
   const getCartItemKey = (product, mods) => {
     if (!mods || mods.length === 0) return String(product.id);
     const modNames = mods.map(m => m.name).sort().join(',');
@@ -196,7 +224,7 @@ export default function RestaurantMenu() {
       const parsedMods = parseMods(item.modifiers);
       if (parsedMods.length > 0) {
           setSelectedProduct({ ...item, parsedMods });
-          setSelectedMods([]); // Сбрасываем выбранные
+          setSelectedMods([]); 
       } else {
           addToCart(item, []);
       }
@@ -212,7 +240,7 @@ export default function RestaurantMenu() {
               return { ...prev, [key]: { ...item, cartKey: key, count: 1, selectedMods: mods } };
           }
       });
-      setSelectedProduct(null); // Закрываем окно, если оно было открыто
+      setSelectedProduct(null); 
   };
 
   const removeFromCart = (cartKey) => {
@@ -232,7 +260,66 @@ export default function RestaurantMenu() {
   const getProductTotalCount = (id) => {
       return Object.values(cart).filter(cItem => cItem.id === id).reduce((sum, cItem) => sum + cItem.count, 0);
   };
-  // --------------------------------------------------
+
+  // --- МАТЕМАТИКА КОРЗИНЫ ---
+  const totalSumRaw = Object.values(cart).reduce((sum, item) => {
+      const itemModsPrice = item.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
+      return sum + ((item.price + itemModsPrice) * item.count);
+  }, 0);
+
+  // Считаем скидку (если она есть)
+  const discountAmount = activePromo?.reward_type === 'discount' ? activePromo.discount_rub : 0;
+  // Итоговая сумма корзины не может быть меньше 0
+  const totalSumDiscounted = Math.max(0, totalSumRaw - discountAmount);
+
+  // --- ЛОГИКА ПРОВЕРКИ ПРОМОКОДА ---
+  const applyPromo = () => {
+      setPromoError('');
+      if (!promoInput.trim()) return;
+      
+      const code = promoInput.trim().toUpperCase();
+      const promo = promotions.find(p => p.code.toUpperCase() === code);
+
+      if (!promo) {
+          setPromoError('Промокод не найден');
+          setActivePromo(null);
+          return;
+      }
+
+      if (promo.usage_limit && promo.used_count >= promo.usage_limit) {
+          setPromoError('Лимит активаций исчерпан');
+          setActivePromo(null);
+          return;
+      }
+
+      if (promo.is_first_order_only && hasPreviousOrders) {
+          setPromoError('Только для первого заказа');
+          setActivePromo(null);
+          return;
+      }
+
+      if (promo.min_cart_total > 0 && totalSumRaw < promo.min_cart_total) {
+          setPromoError(`Минимальная сумма заказа: ${promo.min_cart_total} ₽`);
+          setActivePromo(null);
+          return;
+      }
+
+      setActivePromo(promo);
+  };
+
+  const removePromo = () => {
+      setActivePromo(null);
+      setPromoInput('');
+      setPromoError('');
+  };
+
+  // Очистка промокода, если корзина стала меньше минимальной суммы
+  useEffect(() => {
+      if (activePromo && activePromo.min_cart_total > 0 && totalSumRaw < activePromo.min_cart_total) {
+          removePromo();
+      }
+  }, [totalSumRaw]);
+
 
   const sendOrder = async () => {
     const isYookassa = restaurant?.payment_method === 'yookassa';
@@ -253,10 +340,18 @@ export default function RestaurantMenu() {
       if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
+      
+      // Если применен промокод, добавляем это в адрес или комментарий, чтобы админ видел
+      if (activePromo) {
+          if (activePromo.reward_type === 'discount') {
+              fullAddressStr += `\n🎟 Промокод: ${activePromo.code} (-${activePromo.discount_rub}₽)`;
+          } else {
+              fullAddressStr += `\n🎁 ПОДАРОК ПО ПРОМОКОДУ: ${activePromo.gift_name} (${activePromo.code})`;
+          }
+      }
 
       const coords = mapRef.current ? mapRef.current.placemark.geometry.getCoordinates() : null;
 
-      // ГЕНЕРИРУЕМ СПИСОК БЛЮД С ИХ ДОБАВКАМИ
       const orderItems = Object.values(cart).map(item => {
           let nameWithMods = item.name;
           if (item.selectedMods && item.selectedMods.length > 0) {
@@ -266,10 +361,15 @@ export default function RestaurantMenu() {
           return { name: nameWithMods, count: item.count, price: itemTotalPrice };
       });
 
+      // Добавляем подарочное блюдо в items с нулевой ценой, чтобы оно печаталось в чеке кухни
+      if (activePromo?.reward_type === 'gift') {
+          orderItems.push({ name: `🎁 ПОДАРОК: ${activePromo.gift_name}`, count: 1, price: 0 });
+      }
+
       const orderData = {
         restaurant_name: restaurant?.name,
         items: orderItems,
-        total_price: totalSum + deliveryPrice,
+        total_price: totalSumDiscounted + deliveryPrice, // Отправляем пересчитанную сумму
         status: isYookassa ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
@@ -281,6 +381,14 @@ export default function RestaurantMenu() {
 
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
       if (insertError) { alert("Ошибка: " + insertError.message); setIsUploading(false); return; }
+      
+      // Если промокод был использован, увеличиваем счетчик активаций
+      if (activePromo) {
+          await supabase.rpc('increment_promo_usage', { promo_id: activePromo.id }); // Нужна SQL функция, или просто update
+          // Простой вариант через update (считывает старое и +1, может сбоить при 1000 одновременных заказов, но для старта ок)
+          await supabase.from('promotions').update({ used_count: activePromo.used_count + 1 }).eq('id', activePromo.id);
+      }
+
       window.Telegram?.WebApp?.close();
     } catch (err) { alert("Ошибка: " + err.message); setIsUploading(false); }
   };
@@ -309,12 +417,6 @@ export default function RestaurantMenu() {
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
   
-  // ПЕРЕСЧЕТ ОБЩЕЙ СУММЫ С УЧЕТОМ ДОБАВОК
-  const totalSum = Object.values(cart).reduce((sum, item) => {
-      const itemModsPrice = item.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
-      return sum + ((item.price + itemModsPrice) * item.count);
-  }, 0);
-
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
@@ -374,10 +476,10 @@ export default function RestaurantMenu() {
           })}
         </div>
 
-        {totalSum > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
+        {totalSumRaw > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
-              <span>🛒 Корзина</span><span>{totalSum} ₽</span>
+              <span>🛒 Корзина</span><span>{totalSumDiscounted} ₽</span>
             </button>
           </div>
         )}
@@ -422,15 +524,15 @@ export default function RestaurantMenu() {
             </div>
         )}
 
-        {/* --- ОБНОВЛЕННАЯ КОРЗИНА --- */}
+        {/* --- ОБНОВЛЕННАЯ КОРЗИНА (с промокодом) --- */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10">
+            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10 max-h-[95vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-6">
                  <h2 className="text-2xl font-black">Ваш заказ</h2>
                  <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
               </div>
-              <div className="space-y-6 mb-8 max-h-[45vh] overflow-y-auto pr-2">
+              <div className="space-y-6 mb-8 pr-2">
                 {Object.values(cart).map(cItem => {
                    const modsTotal = cItem.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
                    return (
@@ -453,8 +555,54 @@ export default function RestaurantMenu() {
                    )
                 })}
               </div>
-              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
-                К оформлению ({totalSum} ₽)
+
+              {/* ПОЛЕ ВВОДА ПРОМОКОДА */}
+              <div className="mb-6 bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                  <div className="flex gap-2 mb-1">
+                      <input 
+                          type="text" 
+                          placeholder="Промокод" 
+                          value={promoInput}
+                          onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                          disabled={!!activePromo}
+                          className="flex-1 px-4 py-2 border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400"
+                      />
+                      {activePromo ? (
+                          <button onClick={removePromo} className="bg-red-100 text-red-600 px-4 rounded-xl font-bold active:scale-95 text-sm shadow-sm">✕ ОТМЕНА</button>
+                      ) : (
+                          <button onClick={applyPromo} className="bg-gray-900 text-white px-4 rounded-xl font-bold active:scale-95 text-sm shadow-md">ПРИМЕНИТЬ</button>
+                      )}
+                  </div>
+                  {promoError && <p className="text-red-500 text-xs font-bold mt-2 pl-1">{promoError}</p>}
+                  {activePromo && (
+                      <p className="text-green-600 text-xs font-black mt-2 pl-1 flex items-center gap-1">
+                          ✅ Промокод применен! {activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : `Подарок: ${activePromo.gift_name}`}
+                      </p>
+                  )}
+              </div>
+
+              {/* ОТОБРАЖЕНИЕ ИТОГОВ СО СКИДКОЙ */}
+              {activePromo && (
+                  <div className="flex justify-between items-center bg-green-50 p-4 rounded-2xl mb-4 border border-green-100">
+                      <span className="font-black text-sm text-green-800">
+                          {activePromo.reward_type === 'discount' ? 'Скидка по промокоду' : '🎁 Ваш подарок'}
+                      </span>
+                      <span className="font-black text-green-700">
+                          {activePromo.reward_type === 'discount' ? `-${activePromo.discount_rub} ₽` : activePromo.gift_name}
+                      </span>
+                  </div>
+              )}
+
+              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all flex justify-center gap-2 items-center">
+                Оформить 
+                {activePromo?.reward_type === 'discount' ? (
+                    <div className="flex gap-2 items-center ml-2">
+                        <span className="line-through text-blue-300 text-sm">{totalSumRaw}₽</span>
+                        <span>{totalSumDiscounted} ₽</span>
+                    </div>
+                ) : (
+                    <span>({totalSumRaw} ₽)</span>
+                )}
               </button>
             </div>
           </div>
@@ -505,7 +653,7 @@ export default function RestaurantMenu() {
                       <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
                     </div>
                     <p className="text-xs font-bold text-gray-500">
-                      Переведите <span className="text-blue-600">{totalSum + deliveryPrice} ₽</span> и прикрепите чек:
+                      Переведите <span className="text-blue-600">{totalSumDiscounted + deliveryPrice} ₽</span> и прикрепите чек:
                     </p>
                     <input 
                       type="file" 
@@ -536,7 +684,7 @@ export default function RestaurantMenu() {
                           <span>Доставка {isCalculating && '...'}:</span><span>{isAddressValid ? deliveryPrice : '--'} ₽</span>
                       </div>
                       <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
-                          <span>Итого:</span><span>{isAddressValid ? totalSum + deliveryPrice : totalSum} ₽</span>
+                          <span>Итого к оплате:</span><span>{isAddressValid ? totalSumDiscounted + deliveryPrice : totalSumDiscounted} ₽</span>
                       </div>
                     </>
                   )}
