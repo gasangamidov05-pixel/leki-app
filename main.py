@@ -30,7 +30,6 @@ class AdminStates(StatesGroup):
     waiting_for_new_name = State(); waiting_for_new_price = State(); waiting_for_new_desc = State(); waiting_for_new_photo = State(); waiting_for_hours = State()
     waiting_for_edit_name = State(); waiting_for_edit_desc = State(); waiting_for_edit_photo = State()
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State(); waiting_for_modifier = State()
-    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ПРОМОКОДОВ
     promo_res_id = State(); promo_type = State(); promo_code = State()
     promo_value = State(); promo_min = State(); promo_limit = State()
 
@@ -784,7 +783,8 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 # ==========================================
 @dp.callback_query(F.data.startswith("adm_promo_"))
 async def adm_promo_menu(callback: CallbackQuery):
-    res_id = int(callback.data.split("_")[2])
+    data = callback.data.split("_")
+    res_id = int(data[2])
     conn = await get_db_conn()
     try:
         res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
@@ -803,7 +803,8 @@ async def adm_promo_menu(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_promoadd_"))
 async def adm_promo_add(callback: CallbackQuery, state: FSMContext):
-    res_id = int(callback.data.split("_")[2])
+    data = callback.data.split("_")
+    res_id = int(data[2])
     await state.update_data(promo_res_id=res_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💵 Скидка (в рублях)", callback_data="ptype_discount")],
@@ -842,7 +843,7 @@ async def adm_promo_value(message: types.Message, state: FSMContext):
         await state.update_data(promo_value=message.text)
         
     await state.set_state(AdminStates.promo_min)
-    await message.answer("Введите <b>минимальную сумму заказа</b> для срабатывания промокода (0 если без минималки):\nПример: <code>1500</code>", parse_mode="HTML")
+    await message.answer("Введите <b>минимальную сумму заказа</b> для срабатывания (0 если без минималки):\nПример: <code>1500</code>", parse_mode="HTML")
 
 @dp.message(AdminStates.promo_min)
 async def adm_promo_min(message: types.Message, state: FSMContext):
@@ -889,10 +890,12 @@ async def adm_promo_finish(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_pedit_"))
 async def adm_promo_edit(callback: CallbackQuery):
-    _, p_id, res_id = callback.data.split("_")
+    data = callback.data.split("_")
+    p_id = int(data[2])
+    res_id = int(data[3])
     conn = await get_db_conn()
     try:
-        p = await conn.fetchrow("SELECT * FROM promotions WHERE id = $1", int(p_id))
+        p = await conn.fetchrow("SELECT * FROM promotions WHERE id = $1", p_id)
         
         val = f"Скидка {p['discount_rub']}₽" if p['reward_type'] == 'discount' else f"Подарок: {p['gift_name']}"
         lim = f"{p['used_count']} / {p['usage_limit']}" if p['usage_limit'] else f"{p['used_count']} (безлимит)"
@@ -910,20 +913,24 @@ async def adm_promo_edit(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_ptgl_"))
 async def adm_promo_tgl(callback: CallbackQuery):
-    _, p_id, res_id = callback.data.split("_")
+    data = callback.data.split("_")
+    p_id = int(data[2])
+    res_id = int(data[3])
     conn = await get_db_conn()
     try:
-        await conn.execute("UPDATE promotions SET is_active = NOT is_active WHERE id = $1", int(p_id))
+        await conn.execute("UPDATE promotions SET is_active = NOT is_active WHERE id = $1", p_id)
         callback.data = f"adm_pedit_{p_id}_{res_id}"
         await adm_promo_edit(callback)
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_pdel_"))
 async def adm_promo_del(callback: CallbackQuery):
-    _, p_id, res_id = callback.data.split("_")
+    data = callback.data.split("_")
+    p_id = int(data[2])
+    res_id = int(data[3])
     conn = await get_db_conn()
     try:
-        await conn.execute("DELETE FROM promotions WHERE id = $1", int(p_id))
+        await conn.execute("DELETE FROM promotions WHERE id = $1", p_id)
         callback.data = f"adm_promo_{res_id}"
         await adm_promo_menu(callback)
     finally: await conn.close()
