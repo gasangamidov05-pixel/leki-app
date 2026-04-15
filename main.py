@@ -16,7 +16,7 @@ TOKEN = "8512667739:AAGd8qfpTo6w81L0THUubgNp-xkbt9y-KA4"
 DB_URL = "postgresql://postgres.dmjwjmpmafaxythyqwoz:828Yb24BKN0JMBiR@aws-1-eu-central-1.pooler.supabase.com:6543/postgres"
 MAIN_ADMIN_ID = 5340841151 
 
-# ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
+# ❗️ ВСТАВЬ СЮДА СВОИ ДАННЫЕ ИЗ SUPABASE
 SUPABASE_URL = "https://dmjwjmpmafaxythyqwoz.supabase.co"
 SUPABASE_KEY = "sb_publishable_H3De-9A7ETTo1OHPmU5Ymg_WvJIruEF"
 
@@ -30,6 +30,9 @@ class AdminStates(StatesGroup):
     waiting_for_new_name = State(); waiting_for_new_price = State(); waiting_for_new_desc = State(); waiting_for_new_photo = State(); waiting_for_hours = State()
     waiting_for_edit_name = State(); waiting_for_edit_desc = State(); waiting_for_edit_photo = State()
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State(); waiting_for_modifier = State()
+    # НОВЫЕ СОСТОЯНИЯ ДЛЯ ПРОМОКОДОВ
+    promo_res_id = State(); promo_type = State(); promo_code = State()
+    promo_value = State(); promo_min = State(); promo_limit = State()
 
 class CourierStates(StatesGroup): change_city = State()
 
@@ -765,6 +768,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text=f"🚗 Своя доставка: {sd_text}", callback_data=f"adm_sd_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
             [InlineKeyboardButton(text="🗺 Меню", callback_data=f"adm_menu_{res['id']}")],
+            [InlineKeyboardButton(text="🎁 Акции и Промокоды", callback_data=f"adm_promo_{res['id']}")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data=f"adm_stats_{res['id']}")],
             [InlineKeyboardButton(text="💳 Оплата", callback_data=f"adm_payment_{res['id']}")],
             [
@@ -773,6 +777,155 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             ]
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
+    finally: await conn.close()
+
+# ==========================================
+#           ПРОМОКОДЫ И АКЦИИ
+# ==========================================
+@dp.callback_query(F.data.startswith("adm_promo_"))
+async def adm_promo_menu(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[2])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", res_id)
+        promos = await conn.fetch("SELECT * FROM promotions WHERE restaurant_name = $1 ORDER BY id DESC", res['name'])
+        
+        kb = [[InlineKeyboardButton(text="➕ СОЗДАТЬ АКЦИЮ", callback_data=f"adm_promoadd_{res_id}")]]
+        for p in promos:
+            status = "✅" if p['is_active'] else "🚫"
+            secret = " 🤫" if p['is_secret'] else ""
+            val = f"-{p['discount_rub']}₽" if p['reward_type'] == 'discount' else f"🎁 {p['gift_name'][:10]}.."
+            kb.append([InlineKeyboardButton(text=f"{status} {p['code']} | {val}{secret}", callback_data=f"adm_pedit_{p['id']}_{res_id}")])
+            
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
+        await callback.message.edit_text(f"🎁 <b>Акции и Промокоды: {res['name']}</b>\nУправление скидками и подарками.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_promoadd_"))
+async def adm_promo_add(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[2])
+    await state.update_data(promo_res_id=res_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💵 Скидка (в рублях)", callback_data="ptype_discount")],
+        [InlineKeyboardButton(text="🎁 Блюдо в подарок", callback_data="ptype_gift")]
+    ])
+    await callback.message.edit_text("Выберите тип акции:", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("ptype_"))
+async def adm_promo_type(callback: CallbackQuery, state: FSMContext):
+    ptype = callback.data.split("_")[1]
+    await state.update_data(promo_type=ptype)
+    await state.set_state(AdminStates.promo_code)
+    await callback.message.edit_text("Отправьте слово-промокод (на английском, без пробелов).\nПример: <code>LUCKY2026</code> или <code>MINUS300</code>", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.promo_code)
+async def adm_promo_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    await state.update_data(promo_code=code)
+    data = await state.get_data()
+    
+    await state.set_state(AdminStates.promo_value)
+    if data['promo_type'] == 'discount':
+        await message.answer("Введите сумму скидки <b>в рублях</b> (только цифры):\nПример: <code>300</code>", parse_mode="HTML")
+    else:
+        await message.answer("Введите <b>название блюда</b>, которое пойдет в подарок:\nПример: <code>Пицца Пепперони 25см</code>", parse_mode="HTML")
+
+@dp.message(AdminStates.promo_value)
+async def adm_promo_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    if data['promo_type'] == 'discount':
+        if not message.text.isdigit(): return await message.answer("Только цифры!")
+        await state.update_data(promo_value=int(message.text))
+    else:
+        await state.update_data(promo_value=message.text)
+        
+    await state.set_state(AdminStates.promo_min)
+    await message.answer("Введите <b>минимальную сумму заказа</b> для срабатывания промокода (0 если без минималки):\nПример: <code>1500</code>", parse_mode="HTML")
+
+@dp.message(AdminStates.promo_min)
+async def adm_promo_min(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Только цифры!")
+    await state.update_data(promo_min=int(message.text))
+    
+    await state.set_state(AdminStates.promo_limit)
+    await message.answer("Сколько раз можно использовать этот код? Введите число (или <code>-</code> если безлимит):", parse_mode="HTML")
+
+@dp.message(AdminStates.promo_limit)
+async def adm_promo_limit(message: types.Message, state: FSMContext):
+    limit = None if message.text == "-" else (int(message.text) if message.text.isdigit() else None)
+    await state.update_data(promo_limit=limit)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Публичная (На главном экране)", callback_data="psec_0")],
+        [InlineKeyboardButton(text="🤫 Секретная (Только кто знает код)", callback_data="psec_1")]
+    ])
+    await message.answer("Сделать акцию публичной или секретной?", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("psec_"))
+async def adm_promo_finish(callback: CallbackQuery, state: FSMContext):
+    is_secret = callback.data.split("_")[1] == "1"
+    data = await state.get_data()
+    
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name FROM restaurants WHERE id = $1", data['promo_res_id'])
+        
+        d_rub = data['promo_value'] if data['promo_type'] == 'discount' else 0
+        g_name = data['promo_value'] if data['promo_type'] == 'gift' else None
+        
+        await conn.execute(
+            "INSERT INTO promotions (restaurant_name, code, reward_type, discount_rub, gift_name, min_cart_total, usage_limit, is_secret) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            res['name'], data['promo_code'], data['promo_type'], d_rub, g_name, data['promo_min'], data['promo_limit'], is_secret
+        )
+        await callback.message.edit_text(f"✅ Промокод <b>{data['promo_code']}</b> успешно создан!", parse_mode="HTML")
+        await state.clear()
+        
+        # Возвращаем в меню
+        callback.data = f"adm_promo_{data['promo_res_id']}"
+        await adm_promo_menu(callback)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_pedit_"))
+async def adm_promo_edit(callback: CallbackQuery):
+    _, p_id, res_id = callback.data.split("_")
+    conn = await get_db_conn()
+    try:
+        p = await conn.fetchrow("SELECT * FROM promotions WHERE id = $1", int(p_id))
+        
+        val = f"Скидка {p['discount_rub']}₽" if p['reward_type'] == 'discount' else f"Подарок: {p['gift_name']}"
+        lim = f"{p['used_count']} / {p['usage_limit']}" if p['usage_limit'] else f"{p['used_count']} (безлимит)"
+        sec = "Да 🤫" if p['is_secret'] else "Нет 📢"
+        
+        text = f"🎟 <b>Промокод: {p['code']}</b>\n\nТип: {val}\nМин. чек: {p['min_cart_total']}₽\nИспользований: {lim}\nСекретный: {sec}"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔴 Выключить" if p['is_active'] else "🟢 Включить", callback_data=f"adm_ptgl_{p['id']}_{res_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить полностью", callback_data=f"adm_pdel_{p['id']}_{res_id}")],
+            [InlineKeyboardButton(text="🔙 К списку акций", callback_data=f"adm_promo_{res_id}")]
+        ])
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_ptgl_"))
+async def adm_promo_tgl(callback: CallbackQuery):
+    _, p_id, res_id = callback.data.split("_")
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE promotions SET is_active = NOT is_active WHERE id = $1", int(p_id))
+        callback.data = f"adm_pedit_{p_id}_{res_id}"
+        await adm_promo_edit(callback)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_pdel_"))
+async def adm_promo_del(callback: CallbackQuery):
+    _, p_id, res_id = callback.data.split("_")
+    conn = await get_db_conn()
+    try:
+        await conn.execute("DELETE FROM promotions WHERE id = $1", int(p_id))
+        callback.data = f"adm_promo_{res_id}"
+        await adm_promo_menu(callback)
     finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_sd_"))
@@ -1203,7 +1356,6 @@ async def order_checker():
         try:
             conn = await get_db_conn()
             
-            # 1. СНАЧАЛА ИЩЕМ НОВЫЕ ЗАКАЗЫ
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             for order in new_orders:
                 res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until FROM restaurants WHERE name = $1", order['restaurant_name'])
@@ -1240,17 +1392,13 @@ async def order_checker():
                 kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
                 
                 try:
-                    # Пытаемся отправить сообщение
                     if order['receipt_url']: await bot.send_photo(target, order['receipt_url'], caption=text, reply_markup=kb, parse_mode="HTML")
                     else: await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
                     
-                    # СТАВИМ ГАЛОЧКУ ТОЛЬКО ЕСЛИ ОТПРАВКА ПРОШЛА УСПЕШНО
                     await conn.execute("UPDATE orders SET is_notified = true WHERE id = $1", order['id'])
                 except Exception as e:
-                    # Если Telegram сбоит, мы просто пропускаем этот заказ. В следующем цикле бот попробует снова!
                     print(f"Ошибка отправки заказа {order['id']}: {e}")
 
-            # 2. ПЛАН "Б" - СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ ЗАБЫТЫХ ЗАКАЗОВ
             alert_min = 3
             try:
                 val = await conn.fetchval("SELECT value FROM settings WHERE key = 'superadmin_alert_min'")
@@ -1327,7 +1475,7 @@ async def handle_self_delivery(callback: CallbackQuery):
         ])
         text = (f"🚗 <b>Вы доставляете Заказ №{order_id} своими силами!</b>\n\n📍 Адрес: {order['address']}\n📞 Тел: <code>{order['phone']}</code>\n\n<i>Скопируйте этот текст и отправьте своему курьеру, или нажмите кнопку маршрута ниже.</i>")
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else: await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        else: await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     finally: 
         await conn.close()
         await callback.answer()
@@ -1450,7 +1598,7 @@ async def btn_support(message: types.Message):
 
 # --- ПАГИНАЦИЯ АКТИВНЫХ ЗАКАЗОВ ---
 async def render_active_orders(tg_id, page=0):
-    PAGE_SIZE = 5 # Количество заказов на одной странице
+    PAGE_SIZE = 5 
     conn = await get_db_conn()
     try:
         res = await conn.fetchrow("SELECT name FROM restaurants WHERE admin_tg_id = $1", tg_id)
@@ -1464,7 +1612,7 @@ async def render_active_orders(tg_id, page=0):
             query += " AND restaurant_name = $1"
             args.append(res['name'])
             
-        query += " ORDER BY id DESC" # Новые заказы будут сверху
+        query += " ORDER BY id DESC"
         
         orders = await conn.fetch(query, *args)
         
