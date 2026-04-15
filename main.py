@@ -36,6 +36,7 @@ class AdminStates(StatesGroup):
     waiting_for_base_price = State()
     waiting_for_km_price = State()
     waiting_for_free_km = State()
+    waiting_for_own_courier_id = State() # НОВОЕ СОСТОЯНИЕ
 
 class CourierStates(StatesGroup): change_city = State()
 
@@ -177,7 +178,8 @@ async def courier_monitor():
             cities = await conn.fetch("SELECT DISTINCT city FROM restaurants WHERE city IS NOT NULL AND city != '-'")
             for c in cities:
                 city_name = c['city']
-                count = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", city_name)
+                # Считаем только курьеров платформы
+                count = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", city_name)
                 has_couriers = count > 0
                 await conn.execute("UPDATE restaurants SET has_active_couriers = $1 WHERE city = $2", has_couriers, city_name)
         except: pass
@@ -199,7 +201,8 @@ async def cmd_superadmin(message: types.Message):
         "• <code>/set_paid res ID Дни</code> | <code>/set_paid cour ID Дни</code>\n\n"
         "<b>🌍 Логистика и Управление:</b>\n"
         "• <code>/pin_res ID</code> — Закрепить ТОП 🔥\n"
-        "• <code>/allow_tariffs ID</code> — Разрешить ресторану менять тарифы доставки\n"
+        "• <code>/allow_tariffs ID</code> — Разрешить тарифы доставки\n"
+        "• <code>/allow_couriers ID</code> — Разрешить своих курьеров\n"
         "• <code>/set_buffer Секунды</code> — Задержка выхода\n"
         "• <code>/set_timeout Минуты</code> — Таймер Своей доставки ⏳\n"
         "• <code>/set_alert Минуты</code> — Аварийный таймер 🚨\n"
@@ -229,6 +232,22 @@ async def admin_allow_tariffs(message: types.Message):
         await conn.execute("UPDATE restaurants SET can_edit_tariffs = $1 WHERE id = $2", new_status, res_id)
         status_text = "✅ РАЗРЕШЕНО" if new_status else "❌ ЗАПРЕЩЕНО"
         await message.answer(f"Настройки тарифов для <b>{res['name']}</b> теперь: {status_text}!", parse_mode="HTML")
+    finally: await conn.close()
+
+@dp.message(Command("allow_couriers"))
+async def admin_allow_couriers(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    if len(args) < 2: return await message.answer("Формат: /allow_couriers [ID ресторана]")
+    res_id = int(args[1])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name, can_have_own_couriers FROM restaurants WHERE id = $1", res_id)
+        if not res: return await message.answer("❌ Ресторан не найден!")
+        new_status = not res['can_have_own_couriers']
+        await conn.execute("UPDATE restaurants SET can_have_own_couriers = $1 WHERE id = $2", new_status, res_id)
+        status_text = "✅ РАЗРЕШЕНО" if new_status else "❌ ЗАПРЕЩЕНО"
+        await message.answer(f"Штатные курьеры для <b>{res['name']}</b> теперь: {status_text}!", parse_mode="HTML")
     finally: await conn.close()
 
 @dp.message(Command("send_promo"))
@@ -473,10 +492,18 @@ async def courier_stats(message: types.Message):
 async def get_courier_panel_text(conn, tg_id):
     c = await conn.fetchrow("SELECT * FROM couriers WHERE tg_id = $1", tg_id)
     if not c: return None, None
-    paid = c.get('paid_until')
-    is_paid = True if not paid else paid > datetime.now(timezone.utc)
-    status_text = "🟢 НА ЛИНИИ" if c['is_active'] and is_paid else "🔴 ПЕРЕРЫВ" if is_paid else "❌ ПОДПИСКА ИСТЕКЛА"
-    paid_str = paid.strftime('%d.%m.%Y') if paid else "Безлимит"
+    
+    is_own = c.get('employer_restaurant_id') is not None
+    
+    if is_own:
+        is_paid = True
+        paid_str = "Штатный сотрудник"
+        status_text = "🟢 НА СМЕНЕ" if c['is_active'] else "🔴 ПЕРЕРЫВ"
+    else:
+        paid = c.get('paid_until')
+        is_paid = True if not paid else paid > datetime.now(timezone.utc)
+        status_text = "🟢 НА ЛИНИИ" if c['is_active'] and is_paid else "🔴 ПЕРЕРЫВ" if is_paid else "❌ ПОДПИСКА ИСТЕКЛА"
+        paid_str = paid.strftime('%d.%m.%Y') if paid else "Безлимит"
     
     today_earned, today_count = 0, 0
     try:
@@ -489,15 +516,23 @@ async def get_courier_panel_text(conn, tg_id):
             today_earned += (r['total_price'] - items_sum)
     except: pass
     
-    text = (f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏙 Город: {c['city']}\n💳 Оплачено до: {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>")
+    if is_own:
+        text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏢 {paid_str}\n\n💸 <b>Доставлено сегодня: {today_count} зак.</b>\n\nСтатус: <b>{status_text}</b>"
+    else:
+        text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏙 Город: {c['city']}\n💳 Оплачено до: {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>"
+    
     kb = []
     
+    # Ссылку на карту оставляем
     kb.append([InlineKeyboardButton(text="📱 ОТКРЫТЬ КАРТУ (Приложение)", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))])
     
     active_order = await conn.fetchrow("SELECT id FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived') LIMIT 1", tg_id)
     if active_order: kb.append([InlineKeyboardButton(text="📦 Мой текущий заказ", callback_data=f"cour_active_{active_order['id']}")])
-    kb.append([InlineKeyboardButton(text="🏙 Изменить город", callback_data="cour_change_city")])
-    kb.append([InlineKeyboardButton(text="🔴 Уйти на перерыв" if c['is_active'] else "🟢 Выйти на линию", callback_data="cour_toggle")])
+    
+    if not is_own:
+        kb.append([InlineKeyboardButton(text="🏙 Изменить город", callback_data="cour_change_city")])
+        
+    kb.append([InlineKeyboardButton(text="🔴 Уйти на перерыв" if c['is_active'] else "🟢 Выйти на смену", callback_data="cour_toggle")])
     return text, InlineKeyboardMarkup(inline_keyboard=kb)
 
 @dp.message(Command("courier"))
@@ -510,8 +545,8 @@ async def cmd_courier(message: types.Message, state: FSMContext):
             apply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📝 Стать курьером", url="https://t.me/gasangamidov")]])
             return await message.answer("❌ <b>Доступ запрещен.</b>\nВы не числитесь в системе.", reply_markup=apply_kb, parse_mode="HTML")
         
-        c = await conn.fetchrow("SELECT city FROM couriers WHERE tg_id = $1", message.from_user.id)
-        if c['city'] == '-':
+        c = await conn.fetchrow("SELECT city, employer_restaurant_id FROM couriers WHERE tg_id = $1", message.from_user.id)
+        if c['city'] == '-' and not c['employer_restaurant_id']:
             cities = await conn.fetch("SELECT DISTINCT city AS city_name FROM restaurants WHERE city IS NOT NULL AND city != '-'")
             if not cities: return await message.answer("❌ В системе еще нет активных ресторанов с городами!")
             city_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=city['city_name'], callback_data=f"setcity_{city['city_name']}")] for city in cities])
@@ -559,25 +594,36 @@ async def delayed_offline(tg_id, chat_id, message_id, buffer_sec):
 async def cour_toggle_status(callback: CallbackQuery):
     conn = await get_db_conn()
     try:
-        c = await conn.fetchrow("SELECT city, is_active, paid_until FROM couriers WHERE tg_id = $1", callback.from_user.id)
-        paid = c.get('paid_until')
-        if paid and paid < datetime.now(timezone.utc): return await callback.answer("❌ Срок оплаты истек!", show_alert=True)
+        c = await conn.fetchrow("SELECT city, is_active, paid_until, employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
+        is_own = c.get('employer_restaurant_id') is not None
+        
+        if not is_own:
+            paid = c.get('paid_until')
+            if paid and paid < datetime.now(timezone.utc): return await callback.answer("❌ Срок оплаты истек!", show_alert=True)
         
         if not c['is_active']:
             await conn.execute("UPDATE couriers SET is_active = true WHERE tg_id = $1", callback.from_user.id)
             text, kb = await get_courier_panel_text(conn, callback.from_user.id)
             await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-            pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND r.city = $1", c['city'])
+            
+            if is_own:
+                res_name = await conn.fetchval("SELECT name FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
+                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address FROM orders o WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.restaurant_name = $1", res_name)
+            else:
+                pending_orders = await conn.fetch("SELECT o.id, o.restaurant_name, o.address, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND r.city = $1 AND r.can_have_own_couriers = false", c['city'])
+            
             for p_order in pending_orders:
                 kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{p_order['id']}")]])
                 try: await bot.send_message(callback.from_user.id, f"🚨 <b>Свободный заказ №{p_order['id']}</b>\nИз: {p_order['restaurant_name']}\nКуда: {p_order['address']}", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
         else:
             buffer_sec = 60
-            try:
-                val = await conn.fetchval("SELECT value FROM settings WHERE key = 'courier_buffer_sec'")
-                if val: buffer_sec = int(val)
-            except: pass
+            if is_own: buffer_sec = 0 # Штатные отключаются мгновенно
+            else:
+                try:
+                    val = await conn.fetchval("SELECT value FROM settings WHERE key = 'courier_buffer_sec'")
+                    if val: buffer_sec = int(val)
+                except: pass
 
             if buffer_sec > 0:
                 await callback.answer(f"🕒 Завершение смены через {buffer_sec} сек.", show_alert=True)
@@ -620,7 +666,7 @@ async def show_active_order(callback: CallbackQuery):
             else: nav_url = "https://yandex.ru/maps/?text=" + urllib.parse.quote(order['restaurant_name'])
             kb_arr.append([InlineKeyboardButton(text="🗺 Маршрут в ресторан", url=nav_url)])
             kb_arr.append([InlineKeyboardButton(text="🏃‍♂️ Забрал заказ", callback_data=f"picked_{order_id}")])
-            text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>Не забудьте получить {delivery_fee} ₽ за доставку в ресторане!</b>"
+            text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>За доставку: {delivery_fee} ₽</b>"
         elif order['status'] == 'delivering':
             if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
             else: nav_url = "https://yandex.ru/maps/?text=" + urllib.parse.quote(order['address'].split(', кв/офис')[0])
@@ -691,7 +737,7 @@ async def take_order(callback: CallbackQuery):
             [InlineKeyboardButton(text="🆘 Проблема", callback_data=f"sos_{order_id}")]
         ])
         
-        text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес: {order['address']}\n💵 <b>Заберите {delivery_fee} ₽ в ресторане!</b>"
+        text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес: {order['address']}\n💵 <b>Доставка: {delivery_fee} ₽</b>"
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else: await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     finally: 
@@ -753,7 +799,11 @@ async def done_order(callback: CallbackQuery):
         if order_data['courier_tg_id'] == -1:
             await notify_restaurant(conn, order_id, "Заказ успешно доставлен силами вашего ресторана! ✅")
         else:
-            await notify_restaurant(conn, order_id, "Заказ успешно доставлен курьером платформы! ✅")
+            cour = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", order_data['courier_tg_id'])
+            if cour and cour['employer_restaurant_id']:
+                await notify_restaurant(conn, order_id, "Ваш штатный курьер успешно доставил заказ! ✅")
+            else:
+                await notify_restaurant(conn, order_id, "Заказ успешно доставлен курьером платформы! ✅")
         
         if order_data:
             res = await conn.fetchrow("SELECT id FROM restaurants WHERE name = $1", order_data['restaurant_name'])
@@ -835,15 +885,81 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             ]
         ]
         
-        # ЕСЛИ СУПЕР-АДМИН ДАЛ РАЗРЕШЕНИЕ - ПОКАЗЫВАЕМ КНОПКУ ТАРИФОВ
         if res.get('can_edit_tariffs'):
             kb_buttons.append([InlineKeyboardButton(text="🚚 Настройки тарифов доставки", callback_data=f"adm_delivery_{res['id']}")])
+            
+        if res.get('can_have_own_couriers'):
+            kb_buttons.append([InlineKeyboardButton(text="🛵 Мои курьеры", callback_data=f"adm_own_couriers_{res['id']}")])
             
         kb_buttons.append([InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")])
         
         kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
+
+# --- СВОИ КУРЬЕРЫ (УПРАВЛЕНИЕ ДЛЯ РЕСТОРАНА) ---
+@dp.callback_query(F.data.startswith("adm_own_couriers_"))
+async def adm_own_couriers_list(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    try:
+        couriers = await conn.fetch("SELECT * FROM couriers WHERE employer_restaurant_id = $1", res_id)
+        text = "🛵 <b>Ваши штатные курьеры:</b>\n\n"
+        kb = [[InlineKeyboardButton(text="➕ Добавить курьера", callback_data=f"adm_add_own_cour_{res_id}")]]
+        
+        if not couriers:
+            text += "<i>У вас пока нет добавленных курьеров.</i>"
+        else:
+            for c in couriers:
+                status = "🟢 На смене" if c['is_active'] else "🔴 Отдыхает"
+                text += f"• <b>{c['name']}</b> (ID: <code>{c['tg_id']}</code>) - {status}\n"
+                kb.append([InlineKeyboardButton(text=f"❌ Удалить {c['name']}", callback_data=f"adm_del_own_cour_{c['tg_id']}_{res_id}")])
+                
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_add_own_cour_"))
+async def adm_add_own_cour_start(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[4])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_own_courier_id)
+    await callback.message.answer("Попросите вашего курьера отправить боту команду <code>/my_id</code>.\n\nЗатем отправьте мне его ID и Имя через пробел.\nПример: <code>123456789 Магомед</code>", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_own_courier_id)
+async def process_add_own_cour(message: types.Message, state: FSMContext):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[0].isdigit():
+        return await message.answer("❌ Ошибка формата. Пример: <code>123456789 Магомед</code>", parse_mode="HTML")
+    
+    data = await state.get_data()
+    res_id = data['res_id']
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT city FROM restaurants WHERE id = $1", res_id)
+        await conn.execute(
+            "INSERT INTO couriers (tg_id, name, city, is_active, employer_restaurant_id) VALUES ($1, $2, $3, false, $4) "
+            "ON CONFLICT (tg_id) DO UPDATE SET employer_restaurant_id = $4, name = $2, city = $3",
+            int(args[0]), args[1], res['city'], res_id
+        )
+        await message.answer(f"✅ Курьер <b>{args[1]}</b> успешно привязан к вашему заведению!", parse_mode="HTML")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_del_own_cour_"))
+async def adm_del_own_cour(callback: CallbackQuery):
+    data = callback.data.split("_")
+    c_tg_id = int(data[4])
+    res_id = int(data[5])
+    conn = await get_db_conn()
+    try:
+        await conn.execute("DELETE FROM couriers WHERE tg_id = $1", c_tg_id)
+        callback.data = f"adm_own_couriers_{res_id}"
+        await adm_own_couriers_list(callback)
+    finally: await conn.close()
+
 
 # --- МИНИМАЛЬНЫЙ ЗАКАЗ ---
 @dp.callback_query(F.data.startswith("adm_min_order_"))
@@ -1589,9 +1705,9 @@ async def order_checker():
                 items_sum = sum([i['price'] * i['count'] for i in items])
                 delivery_fee = order['total_price'] - items_sum
                 
-                active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND (paid_until > now() OR paid_until IS NULL)", city_name)
-                if active_couriers == 0: courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров!</b>\nБудьте готовы доставить этот заказ своими силами!"
-                else: courier_warning = f"🟢 Курьеров на линии: {active_couriers}"
+                active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", city_name)
+                if active_couriers == 0: courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров платформы!</b>\nЕсли у вас нет своих курьеров, доставьте заказ своими силами!"
+                else: courier_warning = f"🟢 Курьеров платформы на линии: {active_couriers}"
                 
                 text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
                 
@@ -1642,7 +1758,9 @@ async def stuck_order_checker():
                 if val: timeout_min = int(val)
             except: pass
             
-            stuck_orders = await conn.fetch(f"SELECT id, restaurant_name FROM orders WHERE status = 'accepted' AND courier_tg_id IS NULL AND self_delivery_notified = false AND created_at < NOW() - INTERVAL '{timeout_min} minutes'")
+            # ВАЖНО: Исключаем рестораны, у которых есть право иметь своих курьеров, им тревога не нужна
+            stuck_orders = await conn.fetch(f"SELECT o.id, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.self_delivery_notified = false AND r.can_have_own_couriers = false AND o.created_at < NOW() - INTERVAL '{timeout_min} minutes'")
+            
             for o in stuck_orders:
                 res = await conn.fetchrow("SELECT admin_tg_id FROM restaurants WHERE name = $1", o['restaurant_name'])
                 target = res['admin_tg_id'] if res and res['admin_tg_id'] else MAIN_ADMIN_ID
@@ -1735,21 +1853,31 @@ async def handle_decision(callback: CallbackQuery):
                 try: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
                 except: pass
                 
-            order_info = await conn.fetchrow("SELECT o.address, o.items, o.total_price, r.city, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
+            order_info = await conn.fetchrow("SELECT o.address, o.items, o.total_price, r.city, o.restaurant_name, r.id as res_id, r.can_have_own_couriers FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
             
             items = json.loads(order_info['items'])
             if isinstance(items, str): items = json.loads(items)
             
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
             
-            all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
-            active_couriers = [c for c in all_couriers if c['is_active']]
-            target_couriers = active_couriers if active_couriers else all_couriers
+            # УМНОЕ РАСПРЕДЕЛЕНИЕ КУРЬЕРОВ
+            if order_info['can_have_own_couriers']:
+                # Шлём ТОЛЬКО своим курьерам (активным на смене)
+                target_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE employer_restaurant_id = $1 AND is_active = true", order_info['res_id'])
+                # Если никто не на смене, шлем всем штатным как тревогу
+                if not target_couriers:
+                    target_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE employer_restaurant_id = $1", order_info['res_id'])
+            else:
+                # Стандартная логика для курьеров платформы
+                all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
+                active_couriers = [c for c in all_couriers if c['is_active']]
+                target_couriers = active_couriers if active_couriers else all_couriers
+                
             kb_c = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛵 Взять заказ", callback_data=f"take_{order_id}")]])
             
             for c in target_couriers:
                 prefix = "🚨 Новый заказ" if c['is_active'] else "🆘 ГОРЯЩИЙ ЗАКАЗ! На линии никого нет, выручай!"
-                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
+                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]\n💵 <b>Оплата за доставку: {delivery_fee} ₽</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
