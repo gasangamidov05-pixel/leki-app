@@ -32,7 +32,10 @@ class AdminStates(StatesGroup):
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State(); waiting_for_modifier = State()
     promo_res_id = State(); promo_type = State(); promo_code = State()
     promo_value = State(); promo_min = State(); promo_limit = State()
-    waiting_for_min_order = State() # НОВОЕ СОСТОЯНИЕ ДЛЯ МИН ЧЕКА
+    waiting_for_min_order = State()
+    waiting_for_base_price = State()
+    waiting_for_km_price = State()
+    waiting_for_free_km = State()
 
 class CourierStates(StatesGroup): change_city = State()
 
@@ -194,8 +197,9 @@ async def cmd_superadmin(message: types.Message):
         "• <code>/add_courier ID Имя</code> | <code>/del_courier ID</code> | <code>/courier_stats</code>\n\n"
         "<b>💳 Биллинг:</b>\n"
         "• <code>/set_paid res ID Дни</code> | <code>/set_paid cour ID Дни</code>\n\n"
-        "<b>🌍 Логистика:</b>\n"
+        "<b>🌍 Логистика и Управление:</b>\n"
         "• <code>/pin_res ID</code> — Закрепить ТОП 🔥\n"
+        "• <code>/allow_tariffs ID</code> — Разрешить ресторану менять тарифы доставки\n"
         "• <code>/set_buffer Секунды</code> — Задержка выхода\n"
         "• <code>/set_timeout Минуты</code> — Таймер Своей доставки ⏳\n"
         "• <code>/set_alert Минуты</code> — Аварийный таймер 🚨\n"
@@ -203,7 +207,7 @@ async def cmd_superadmin(message: types.Message):
         "<b>📢 Рассылка:</b>\n"
         "• <code>/send_promo Город Текст сообщения</code>\n"
         "• <code>/send_promo Всем Текст сообщения</code>\n\n"
-        "<b>💰 УМНЫЕ ТАРИФЫ:</b>\n"
+        "<b>💰 УМНЫЕ ТАРИФЫ (Глобально):</b>\n"
         "• <code>/set_city_price Город База Км</code>\n"
         "• <code>/set_surge Город 1.5</code>\n"
         "• <code>/set_weather Город 50</code>\n"
@@ -211,37 +215,43 @@ async def cmd_superadmin(message: types.Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+@dp.message(Command("allow_tariffs"))
+async def admin_allow_tariffs(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    args = message.text.split()
+    if len(args) < 2: return await message.answer("Формат: /allow_tariffs [ID ресторана]")
+    res_id = int(args[1])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT name, can_edit_tariffs FROM restaurants WHERE id = $1", res_id)
+        if not res: return await message.answer("❌ Ресторан не найден!")
+        new_status = not res['can_edit_tariffs']
+        await conn.execute("UPDATE restaurants SET can_edit_tariffs = $1 WHERE id = $2", new_status, res_id)
+        status_text = "✅ РАЗРЕШЕНО" if new_status else "❌ ЗАПРЕЩЕНО"
+        await message.answer(f"Настройки тарифов для <b>{res['name']}</b> теперь: {status_text}!", parse_mode="HTML")
+    finally: await conn.close()
+
 @dp.message(Command("send_promo"))
 async def superadmin_send_promo(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
-    
     args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        return await message.answer("Формат: <code>/send_promo Город Текст сообщения</code>\nИли: <code>/send_promo Всем Текст сообщения</code>", parse_mode="HTML")
-        
+    if len(args) < 3: return await message.answer("Формат: <code>/send_promo Город Текст сообщения</code>", parse_mode="HTML")
     target_city = args[1]
     promo_text = args[2]
-    
     conn = await get_db_conn()
     try:
         rows = await conn.fetch("SELECT o.user_data, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.user_data IS NOT NULL")
         unique_users = set()
-        
         for row in rows:
-            if target_city.lower() != "всем" and row['city'].lower() != target_city.lower():
-                continue
+            if target_city.lower() != "всем" and row['city'].lower() != target_city.lower(): continue
             try:
                 u_data = json.loads(row['user_data'])
                 if isinstance(u_data, str): u_data = json.loads(u_data)
                 user_id = u_data.get('id')
                 if user_id: unique_users.add(int(user_id))
             except: pass
-        
-        if not unique_users:
-            return await message.answer(f"❌ Пользователи для города <b>{target_city}</b> не найдены.", parse_mode="HTML")
-            
+        if not unique_users: return await message.answer(f"❌ Пользователи для города <b>{target_city}</b> не найдены.", parse_mode="HTML")
         msg = await message.answer(f"⏳ Начинаю рассылку для <b>{len(unique_users)}</b> пользователей...", parse_mode="HTML")
-        
         success_count = 0
         for uid in unique_users:
             try:
@@ -249,11 +259,8 @@ async def superadmin_send_promo(message: types.Message):
                 success_count += 1
                 await asyncio.sleep(0.05)
             except Exception: pass
-                
         await msg.edit_text(f"✅ <b>Рассылка завершена!</b>\nУспешно доставлено: {success_count} из {len(unique_users)}", parse_mode="HTML")
-        
-    finally:
-        await conn.close()
+    finally: await conn.close()
 
 @dp.message(Command("set_surge"))
 async def admin_set_surge(message: types.Message):
@@ -814,7 +821,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         min_amount = res.get('min_order_amount') or 0
         min_text = f"💰 Мин. заказ: {min_amount}₽ ({'✅' if is_min_active else '❌'})"
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[
+        kb_buttons = [
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text=f"🚗 Своя доставка: {sd_text}", callback_data=f"adm_sd_{res['id']}")],
             [InlineKeyboardButton(text="⏰ Часы работы", callback_data=f"adm_hours_{res['id']}")],
@@ -825,9 +832,16 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [
                 InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}"),
                 InlineKeyboardButton(text=min_text, callback_data=f"adm_min_order_{res['id']}")
-            ],
-            [InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")]
-        ])
+            ]
+        ]
+        
+        # ЕСЛИ СУПЕР-АДМИН ДАЛ РАЗРЕШЕНИЕ - ПОКАЗЫВАЕМ КНОПКУ ТАРИФОВ
+        if res.get('can_edit_tariffs'):
+            kb_buttons.append([InlineKeyboardButton(text="🚚 Настройки тарифов доставки", callback_data=f"adm_delivery_{res['id']}")])
+            
+        kb_buttons.append([InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
 
@@ -877,6 +891,97 @@ async def process_min_order_val(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Минимальная сумма обновлена: {message.text} ₽")
     await state.clear()
     await cmd_admin(message, state)
+
+# --- НАСТРОЙКА ТАРИФОВ ДОСТАВКИ (ДЛЯ РЕСТОРАНОВ) ---
+@dp.callback_query(F.data.startswith("adm_delivery_"))
+async def adm_delivery_menu(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[2])
+    conn = await get_db_conn()
+    try:
+        res = await conn.fetchrow("SELECT base_delivery_price, km_delivery_price, free_base_km FROM restaurants WHERE id = $1", res_id)
+        
+        base = res.get('base_delivery_price') or 150
+        km = res.get('km_delivery_price') or 22
+        free = res.get('free_base_km') or 0
+
+        text = (f"🚚 <b>Настройки тарифов доставки</b>\n\n"
+                f"Базовая стоимость: <b>{base} ₽</b>\n"
+                f"Цена за каждый км: <b>{km} ₽</b>\n"
+                f"Бесплатные км в базе: <b>{free} км</b>")
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Базовая цена", callback_data=f"adm_del_base_{res_id}")],
+            [InlineKeyboardButton(text="✏️ Цена за КМ", callback_data=f"adm_del_km_{res_id}")],
+            [InlineKeyboardButton(text="✏️ Бесплатные КМ", callback_data=f"adm_del_free_{res_id}")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")]
+        ])
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    finally: 
+        await conn.close()
+        await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_del_base_"))
+async def adm_del_base_start(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_base_price)
+    await callback.message.answer("Введите новую базовую стоимость доставки в рублях (например, 150):")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_base_price)
+async def process_del_base(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Только цифры!")
+    data = await state.get_data()
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET base_delivery_price = $1 WHERE id = $2", int(message.text), data['res_id'])
+        await message.answer("✅ Базовая цена обновлена!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_del_km_"))
+async def adm_del_km_start(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_km_price)
+    await callback.message.answer("Введите новую стоимость за 1 километр в рублях (например, 20):")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_km_price)
+async def process_del_km(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Только цифры!")
+    data = await state.get_data()
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET km_delivery_price = $1 WHERE id = $2", int(message.text), data['res_id'])
+        await message.answer("✅ Цена за километр обновлена!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
+
+@dp.callback_query(F.data.startswith("adm_del_free_"))
+async def adm_del_free_start(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_free_km)
+    await callback.message.answer("Введите количество бесплатных километров (например: 0, 1, 2):")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_free_km)
+async def process_del_free(message: types.Message, state: FSMContext):
+    try:
+        val = float(message.text)
+    except ValueError:
+        return await message.answer("Введите число (можно с точкой, например 1.5)!")
+    data = await state.get_data()
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET free_base_km = $1 WHERE id = $2", val, data['res_id'])
+        await message.answer("✅ Бесплатные километры обновлены!")
+        await state.clear()
+        await cmd_admin(message, state)
+    finally: await conn.close()
 
 
 # ==========================================
