@@ -238,11 +238,14 @@ export default function Home() {
                           {restaurant.promotions.map(p => {
                               const isDiscount = p.reward_type === 'discount';
                               const text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
-                              const minText = p.min_cart_total > 0 ? ` от ${p.min_cart_total}₽` : '';
+                              const minText = p.min_cart_total > 0 ? ` (от ${p.min_cart_total}₽)` : '';
                               return (
-                                  <span key={p.id} className={`text-[10px] font-black px-2.5 py-1 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
-                                      {text}{minText}
-                                  </span>
+                                  <div key={p.id} className={`text-[10px] flex items-center px-2.5 py-1.5 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
+                                      <span className="font-black">{text}{minText}</span>
+                                      <span className="mx-1.5 opacity-40">|</span>
+                                      <span className="font-bold mr-1">КОД:</span>
+                                      <span className="font-black select-all cursor-pointer bg-white/60 px-1.5 py-0.5 rounded-md border border-white">{p.code}</span>
+                                  </div>
                               )
                           })}
                       </div>
