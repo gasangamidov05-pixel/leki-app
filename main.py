@@ -199,13 +199,66 @@ async def cmd_superadmin(message: types.Message):
         "• <code>/set_timeout Минуты</code> — Таймер Своей доставки ⏳\n"
         "• <code>/set_alert Минуты</code> — Аварийный таймер 🚨\n"
         "• <code>/stats</code> — СТАТИСТИКА 📊\n\n"
-        "<b>💰 УМНЫЕ ТАРИФЫ ДОСТАВКИ:</b>\n"
+        "<b>📢 Рассылка:</b>\n"
+        "• <code>/send_promo Город Текст сообщения</code>\n"
+        "• <code>/send_promo Всем Текст сообщения</code>\n\n"
+        "<b>💰 УМНЫЕ ТАРИФЫ:</b>\n"
         "• <code>/set_city_price Город База Км</code>\n"
-        "• <code>/set_surge Город 1.5</code> — Час пик (множитель)\n"
-        "• <code>/set_weather Город 50</code> — Надбавка за погоду\n"
-        "• <code>/set_free_km Город 2</code> — Бесплатные КМ в базе"
+        "• <code>/set_surge Город 1.5</code>\n"
+        "• <code>/set_weather Город 50</code>\n"
+        "• <code>/set_free_km Город 2</code>"
     )
     await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("send_promo"))
+async def superadmin_send_promo(message: types.Message):
+    if message.from_user.id != MAIN_ADMIN_ID: return
+    
+    # Разбиваем сообщение на 3 части: /send_promo, Город, Текст
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        return await message.answer("Формат: <code>/send_promo Город Текст сообщения</code>\nИли: <code>/send_promo Всем Текст сообщения</code>", parse_mode="HTML")
+        
+    target_city = args[1]
+    promo_text = args[2]
+    
+    conn = await get_db_conn()
+    try:
+        # Достаем все заказы, чтобы найти уникальных пользователей и города ресторанов
+        rows = await conn.fetch("SELECT o.user_data, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.user_data IS NOT NULL")
+        unique_users = set()
+        
+        for row in rows:
+            # Если рассылка не "Всем", фильтруем по городу
+            if target_city.lower() != "всем" and row['city'].lower() != target_city.lower():
+                continue
+            try:
+                u_data = json.loads(row['user_data'])
+                if isinstance(u_data, str): u_data = json.loads(u_data)
+                user_id = u_data.get('id')
+                if user_id: unique_users.add(int(user_id))
+            except: pass
+        
+        if not unique_users:
+            return await message.answer(f"❌ Пользователи для города <b>{target_city}</b> не найдены.", parse_mode="HTML")
+            
+        msg = await message.answer(f"⏳ Начинаю рассылку для <b>{len(unique_users)}</b> пользователей...", parse_mode="HTML")
+        
+        success_count = 0
+        for uid in unique_users:
+            try:
+                await bot.send_message(uid, promo_text, parse_mode="HTML")
+                success_count += 1
+                # Защита от лимитов Telegram (не более 30 сообщений в секунду)
+                await asyncio.sleep(0.05)
+            except Exception:
+                # Если пользователь заблокировал бота, просто пропускаем его
+                pass
+                
+        await msg.edit_text(f"✅ <b>Рассылка завершена!</b>\nУспешно доставлено: {success_count} из {len(unique_users)}", parse_mode="HTML")
+        
+    finally:
+        await conn.close()
 
 @dp.message(Command("set_surge"))
 async def admin_set_surge(message: types.Message):
