@@ -54,7 +54,7 @@ def get_courier_main_kb(is_own=False):
     if is_own:
         return ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(text="🛵 Личный кабинет")],
+                [KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📦 Мои заказы")],
                 [KeyboardButton(text="🆘 Поддержка")]
             ],
             resize_keyboard=True
@@ -442,7 +442,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await message.answer("👑 Добро пожаловать, Администратор! Ваши инструменты управления в меню ниже.", reply_markup=get_admin_main_kb())
         elif is_courier:
             is_own = is_courier['employer_restaurant_id'] is not None
-            text = "🛵 Салам! Заказы твоего заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
+            text = "🛵 Салам! Твои заказы заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
             await message.answer(text, reply_markup=get_courier_main_kb(is_own))
         else:
             await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
@@ -499,10 +499,11 @@ async def courier_stats(message: types.Message):
 #           ПАНЕЛЬ КУРЬЕРА
 # ==========================================
 async def get_courier_panel_text(conn, tg_id):
-    c = await conn.fetchrow("SELECT * FROM couriers WHERE tg_id = $1", tg_id)
+    c = await conn.fetchrow("SELECT c.*, r.is_own_courier_salary FROM couriers c LEFT JOIN restaurants r ON c.employer_restaurant_id = r.id WHERE c.tg_id = $1", tg_id)
     if not c: return None, None
     
     is_own = c.get('employer_restaurant_id') is not None
+    is_salary = c.get('is_own_courier_salary', True)
     
     if is_own:
         is_paid = True
@@ -525,8 +526,10 @@ async def get_courier_panel_text(conn, tg_id):
             today_earned += (r['total_price'] - items_sum)
     except: pass
     
-    if is_own:
-        text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏢 {paid_str}\n\n💸 <b>Доставлено сегодня: {today_count} зак.</b>\n\nСтатус: <b>{status_text}</b>"
+    if is_own and is_salary:
+        text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏢 {paid_str}\n\n📦 <b>Доставлено сегодня: {today_count} зак.</b>\n\nСтатус: <b>{status_text}</b>"
+    elif is_own and not is_salary:
+        text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏢 {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>"
     else:
         text = f"🛵 <b>Кабинет курьера</b>\n\n👤 {c['name']}\n🏙 Город: {c['city']}\n💳 Оплачено до: {paid_str}\n\n💸 <b>Заработано сегодня: {today_earned} ₽ ({today_count} зак.)</b>\n\nСтатус: <b>{status_text}</b>"
     
@@ -662,8 +665,13 @@ async def show_active_order(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[2])
     conn = await get_db_conn()
     try:
-        order = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        order = await conn.fetchrow("SELECT o.*, r.is_own_courier_salary FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
         if not order: return await callback.answer("Заказ не найден", show_alert=True)
+        
+        c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
+        is_own_cour = c and c['employer_restaurant_id'] is not None
+        is_salary = is_own_cour and order.get('is_own_courier_salary', True)
+
         items = json.loads(order['items'])
         if isinstance(items, str): items = json.loads(items)
         delivery_fee = order['total_price'] - sum([i['price'] * i['count'] for i in items])
@@ -675,7 +683,8 @@ async def show_active_order(callback: CallbackQuery):
             else: nav_url = "https://yandex.ru/maps/?text=" + urllib.parse.quote(order['restaurant_name'])
             kb_arr.append([InlineKeyboardButton(text="🗺 Маршрут в ресторан", url=nav_url)])
             kb_arr.append([InlineKeyboardButton(text="🏃‍♂️ Забрал заказ", callback_data=f"picked_{order_id}")])
-            text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}\n💵 <b>Доставка: {delivery_fee} ₽</b>"
+            fee_text = "" if is_salary else f"\n💵 <b>За доставку: {delivery_fee} ₽</b>"
+            text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес доставки: {order['address']}{fee_text}"
         elif order['status'] == 'delivering':
             if order['lat'] and order['lon']: nav_url = f"https://yandex.ru/maps/?pt={order['lon']},{order['lat']}&z=18&l=map"
             else: nav_url = "https://yandex.ru/maps/?text=" + urllib.parse.quote(order['address'].split(', кв/офис')[0])
@@ -722,8 +731,11 @@ async def take_order(callback: CallbackQuery):
     try:
         c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
         is_own = c and c['employer_restaurant_id'] is not None
-
-        if not is_own:
+        is_salary = False
+        
+        if is_own:
+            is_salary = await conn.fetchval("SELECT is_own_courier_salary FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
+        else:
             active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived')", callback.from_user.id)
             if active_count >= 2:
                 return await callback.answer("🛑 ЛИМИТ! Вы не можете взять больше 2-х заказов одновременно.", show_alert=True)
@@ -750,7 +762,9 @@ async def take_order(callback: CallbackQuery):
             [InlineKeyboardButton(text="🆘 Проблема", callback_data=f"sos_{order_id}")]
         ])
         
-        text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес: {order['address']}\n💵 <b>Доставка: {delivery_fee} ₽</b>"
+        fee_text = "" if is_salary else f"\n💵 <b>Доставка: {delivery_fee} ₽</b>"
+        text = f"✅ <b>Заказ №{order_id} принят!</b>\n\nЗабрать в: {order['restaurant_name']}\nАдрес: {order['address']}{fee_text}"
+        
         if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else: await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     finally: 
@@ -916,9 +930,17 @@ async def adm_own_couriers_list(callback: CallbackQuery):
     res_id = int(callback.data.split("_")[3])
     conn = await get_db_conn()
     try:
+        res = await conn.fetchrow("SELECT is_own_courier_salary FROM restaurants WHERE id = $1", res_id)
         couriers = await conn.fetch("SELECT * FROM couriers WHERE employer_restaurant_id = $1", res_id)
         text = "🛵 <b>Ваши штатные курьеры:</b>\n\n"
-        kb = [[InlineKeyboardButton(text="➕ Добавить курьера", callback_data=f"adm_add_own_cour_{res_id}")]]
+        
+        is_salary = res.get('is_own_courier_salary', True)
+        pay_type_text = "Зарплата" if is_salary else "Процент с доставки"
+        
+        kb = [
+            [InlineKeyboardButton(text=f"💳 Тип оплаты: {pay_type_text}", callback_data=f"adm_own_pay_{res_id}")],
+            [InlineKeyboardButton(text="➕ Добавить курьера", callback_data=f"adm_add_own_cour_{res_id}")]
+        ]
         
         if not couriers:
             text += "<i>У вас пока нет добавленных курьеров.</i>"
@@ -931,6 +953,16 @@ async def adm_own_couriers_list(callback: CallbackQuery):
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")])
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     finally: await conn.close(); await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_own_pay_"))
+async def adm_own_pay_toggle(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    try:
+        await conn.execute("UPDATE restaurants SET is_own_courier_salary = NOT COALESCE(is_own_courier_salary, true) WHERE id = $1", res_id)
+        callback.data = f"adm_own_couriers_{res_id}"
+        await adm_own_couriers_list(callback)
+    finally: await conn.close()
 
 @dp.callback_query(F.data.startswith("adm_add_own_cour_"))
 async def adm_add_own_cour_start(callback: CallbackQuery, state: FSMContext):
@@ -1700,7 +1732,7 @@ async def order_checker():
             
             new_orders = await conn.fetch("SELECT * FROM orders WHERE status = 'new' AND is_notified = false LIMIT 5")
             for order in new_orders:
-                res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until FROM restaurants WHERE name = $1", order['restaurant_name'])
+                res_info = await conn.fetchrow("SELECT city, admin_tg_id, paid_until, can_have_own_couriers FROM restaurants WHERE name = $1", order['restaurant_name'])
                 paid = res_info.get('paid_until') if res_info else None
                 if paid and paid < datetime.now(timezone.utc): continue
                 
@@ -1718,11 +1750,17 @@ async def order_checker():
                 items_sum = sum([i['price'] * i['count'] for i in items])
                 delivery_fee = order['total_price'] - items_sum
                 
-                active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", city_name)
-                if active_couriers == 0: courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров платформы!</b>\nЕсли у вас нет своих курьеров, доставьте заказ своими силами!"
-                else: courier_warning = f"🟢 Курьеров платформы на линии: {active_couriers}"
+                is_own_delivery = res_info.get('can_have_own_couriers') if res_info else False
+                if is_own_delivery:
+                    payment_info = ""
+                    courier_warning = "🟢 Заказ будет передан вашим штатным курьерам."
+                else:
+                    active_couriers = await conn.fetchval("SELECT COUNT(*) FROM couriers WHERE city = $1 AND is_active = true AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", city_name)
+                    if active_couriers == 0: courier_warning = f"🔴 <b>ВНИМАНИЕ! На линии 0 курьеров платформы!</b>\nЕсли у вас нет своих курьеров, доставьте заказ своими силами!"
+                    else: courier_warning = f"🟢 Курьеров платформы на линии: {active_couriers}"
+                    payment_info = f"❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n"
                 
-                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n❗️ <b>ОПЛАТА КУРЬЕРУ: Выдайте курьеру {delivery_fee} ₽ при передаче заказа.</b>\n\n{courier_warning}")
+                text = (f"🚨 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n\n🏙 Город: {city_name}\n👤 {u.get('first_name', 'Клиент')}\n📞 Тел: <code>{order['phone']}</code>\n📍 {order['address']}\n\n{items_text}\n💰 <b>ИТОГО: {order['total_price']} ₽</b>\n\n{payment_info}{courier_warning}")
                 
                 kb_buttons = [
                     [InlineKeyboardButton(text="✅ Принять (Выбрать время)", callback_data=f"time_{order['id']}_{client_id}")]
@@ -1771,7 +1809,6 @@ async def stuck_order_checker():
                 if val: timeout_min = int(val)
             except: pass
             
-            # ВАЖНО: Исключаем рестораны, у которых есть право иметь своих курьеров, им тревога не нужна
             stuck_orders = await conn.fetch(f"SELECT o.id, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.self_delivery_notified = false AND r.can_have_own_couriers = false AND o.created_at < NOW() - INTERVAL '{timeout_min} minutes'")
             
             for o in stuck_orders:
@@ -1866,20 +1903,19 @@ async def handle_decision(callback: CallbackQuery):
                 try: await bot.send_message(client_id, f"🎉 Заказ №{order_id} принят! Еда будет готова примерно к {ready_time}. Ищем курьера.")
                 except: pass
                 
-            order_info = await conn.fetchrow("SELECT o.address, o.items, o.total_price, r.city, o.restaurant_name, r.id as res_id, r.can_have_own_couriers FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
+            order_info = await conn.fetchrow("SELECT o.address, o.items, o.total_price, r.city, o.restaurant_name, r.id as res_id, r.can_have_own_couriers, r.is_own_courier_salary FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.id = $1", order_id)
             
             items = json.loads(order_info['items'])
             if isinstance(items, str): items = json.loads(items)
             
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
             
-            # УМНОЕ РАСПРЕДЕЛЕНИЕ КУРЬЕРОВ
             is_own_delivery = order_info['can_have_own_couriers']
+            is_salary = order_info.get('is_own_courier_salary', True)
+            
             if is_own_delivery:
-                # Шлём всем своим курьерам (и активным, и неактивным, так как они штатные)
                 target_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE employer_restaurant_id = $1", order_info['res_id'])
             else:
-                # Стандартная логика для курьеров платформы
                 all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
                 active_couriers = [c for c in all_couriers if c['is_active']]
                 target_couriers = active_couriers if active_couriers else all_couriers
@@ -1889,10 +1925,12 @@ async def handle_decision(callback: CallbackQuery):
             for c in target_couriers:
                 if is_own_delivery:
                     prefix = "🚨 Новый заказ"
+                    fee_text = "" if is_salary else f"\n💵 <b>Оплата за доставку: {delivery_fee} ₽</b>"
                 else:
                     prefix = "🚨 Новый заказ" if c['is_active'] else "🆘 ГОРЯЩИЙ ЗАКАЗ! На линии никого нет, выручай!"
+                    fee_text = f"\n💵 <b>Оплата за доставку: {delivery_fee} ₽ (заберете в ресторане)</b>"
                     
-                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]\n💵 <b>Оплата за доставку: {delivery_fee} ₽</b>\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
+                try: await bot.send_message(c['tg_id'], f"{prefix} №{order_id}\nИз: {order_info['restaurant_name']}\nКуда: 📍 [Скрыт до принятия заказа]{fee_text}\n\n⏳ <b>Будет готово к {ready_time} (через {prep_time} мин)</b>", reply_markup=kb_c, parse_mode="HTML")
                 except: pass
             
             caption = (callback.message.caption or callback.message.text).split('\n\n🔴')[0].split('\n\n🟢')[0]
@@ -1947,7 +1985,7 @@ async def btn_courier_map(message: types.Message):
     try:
         c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", message.from_user.id)
         if c and c['employer_restaurant_id'] is not None:
-            return  # Скрываем логику карты для штатных курьеров
+            return  
     finally:
         await conn.close()
         
@@ -1960,7 +1998,23 @@ async def btn_courier_map(message: types.Message):
 async def btn_support(message: types.Message):
     await message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
 
-# --- ПАГИНАЦИЯ АКТИВНЫХ ЗАКАЗОВ ---
+# --- НОВОЕ: СПИСОК АКТИВНЫХ ЗАКАЗОВ ДЛЯ КУРЬЕРА ---
+@dp.message(F.text == "📦 Мои заказы")
+async def btn_courier_my_orders(message: types.Message):
+    conn = await get_db_conn()
+    try:
+        orders = await conn.fetch("SELECT id, status, address FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived') ORDER BY id DESC", message.from_user.id)
+        if not orders:
+            return await message.answer("У вас нет активных заказов на данный момент.")
+        
+        for o in orders:
+            status_emoji = "🏃" if o['status'] == 'taken' else "🚴" if o['status'] == 'delivering' else "📍"
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📦 Открыть заказ", callback_data=f"cour_active_{o['id']}")]])
+            await message.answer(f"{status_emoji} <b>Заказ №{o['id']}</b>\n📍 {o['address']}", reply_markup=kb, parse_mode="HTML")
+    finally:
+        await conn.close()
+
+# --- ПАГИНАЦИЯ АКТИВНЫХ ЗАКАЗОВ (АДМИНЫ) ---
 async def render_active_orders(tg_id, page=0):
     PAGE_SIZE = 5 
     conn = await get_db_conn()
