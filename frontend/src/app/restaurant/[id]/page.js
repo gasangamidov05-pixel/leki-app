@@ -32,7 +32,7 @@ export default function RestaurantMenu() {
   
   const [restaurant, setRestaurant] = useState(null)
   const [products, setProducts] = useState([])
-  const [promotions, setPromotions] = useState([]) // Храним промокоды заведения
+  const [promotions, setPromotions] = useState([]) 
   
   const [cart, setCart] = useState({})
   const [selectedProduct, setSelectedProduct] = useState(null) 
@@ -41,12 +41,11 @@ export default function RestaurantMenu() {
   const [activeCategory, setActiveCategory] = useState('Все')
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
-  const [hasPreviousOrders, setHasPreviousOrders] = useState(false) // Проверка для первого заказа
+  const [hasPreviousOrders, setHasPreviousOrders] = useState(false) 
 
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   
-  // ПРОМОКОД СТЕЙТЫ
   const [promoInput, setPromoInput] = useState('')
   const [activePromo, setActivePromo] = useState(null)
   const [promoError, setPromoError] = useState('')
@@ -65,16 +64,24 @@ export default function RestaurantMenu() {
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
+  // ВЫТЯГИВАЕМ ДАННЫЕ КЛИЕНТА ИЗ ПАМЯТИ
+  useEffect(() => {
+    const savedPhone = localStorage.getItem('leki_phone');
+    const savedApt = localStorage.getItem('leki_apt');
+    const savedEnt = localStorage.getItem('leki_ent');
+    if (savedPhone) setPhone(savedPhone);
+    if (savedApt) setApartment(savedApt);
+    if (savedEnt) setEntrance(savedEnt);
+  }, []);
+
   useEffect(() => {
     async function fetchData() {
-      // 1. Загружаем Ресторан и Меню
       const { data: res } = await supabase.from('restaurants').select('*').eq('id', params.id).single()
       const { data: ratingData } = await supabase.from('restaurant_ratings').select('avg_rating').eq('restaurant_id', params.id).maybeSingle()
       setRestaurant({...res, rating: ratingData?.avg_rating || '5.0'})
       const { data: prod } = await supabase.from('products').select('*').eq('restaurant_id', params.id).order('id')
       setProducts(prod || [])
 
-      // 2. Загружаем Промокоды (активные, не истекшие)
       if (res?.name) {
           const nowMs = new Date().getTime();
           const { data: promos } = await supabase.from('promotions').select('*').eq('restaurant_name', res.name).eq('is_active', true);
@@ -84,7 +91,6 @@ export default function RestaurantMenu() {
           }
       }
 
-      // 3. Проверяем, были ли заказы ранее (для скидок на первый заказ)
       const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
       if (tgUser?.id) {
           const { data: pastOrders } = await supabase.from('orders').select('id, user_data').limit(10);
@@ -261,18 +267,14 @@ export default function RestaurantMenu() {
       return Object.values(cart).filter(cItem => cItem.id === id).reduce((sum, cItem) => sum + cItem.count, 0);
   };
 
-  // --- МАТЕМАТИКА КОРЗИНЫ ---
   const totalSumRaw = Object.values(cart).reduce((sum, item) => {
       const itemModsPrice = item.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
       return sum + ((item.price + itemModsPrice) * item.count);
   }, 0);
 
-  // Считаем скидку (если она есть)
   const discountAmount = activePromo?.reward_type === 'discount' ? activePromo.discount_rub : 0;
-  // Итоговая сумма корзины не может быть меньше 0
   const totalSumDiscounted = Math.max(0, totalSumRaw - discountAmount);
 
-  // --- ЛОГИКА ПРОВЕРКИ ПРОМОКОДА ---
   const applyPromo = () => {
       setPromoError('');
       if (!promoInput.trim()) return;
@@ -313,7 +315,6 @@ export default function RestaurantMenu() {
       setPromoError('');
   };
 
-  // Очистка промокода, если корзина стала меньше минимальной суммы
   useEffect(() => {
       if (activePromo && activePromo.min_cart_total > 0 && totalSumRaw < activePromo.min_cart_total) {
           removePromo();
@@ -341,7 +342,6 @@ export default function RestaurantMenu() {
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       fullAddressStr += `\n🚚 Доставка: ${deliveryPrice} ₽`;
       
-      // Если применен промокод, добавляем это в адрес или комментарий, чтобы админ видел
       if (activePromo) {
           if (activePromo.reward_type === 'discount') {
               fullAddressStr += `\n🎟 Промокод: ${activePromo.code} (-${activePromo.discount_rub}₽)`;
@@ -361,7 +361,6 @@ export default function RestaurantMenu() {
           return { name: nameWithMods, count: item.count, price: itemTotalPrice };
       });
 
-      // Добавляем подарочное блюдо в items с нулевой ценой, чтобы оно печаталось в чеке кухни
       if (activePromo?.reward_type === 'gift') {
           orderItems.push({ name: `🎁 ПОДАРОК: ${activePromo.gift_name}`, count: 1, price: 0 });
       }
@@ -369,7 +368,7 @@ export default function RestaurantMenu() {
       const orderData = {
         restaurant_name: restaurant?.name,
         items: orderItems,
-        total_price: totalSumDiscounted + deliveryPrice, // Отправляем пересчитанную сумму
+        total_price: totalSumDiscounted + deliveryPrice, 
         status: isYookassa ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
@@ -382,12 +381,14 @@ export default function RestaurantMenu() {
       const { error: insertError } = await supabase.from('orders').insert([orderData]);
       if (insertError) { alert("Ошибка: " + insertError.message); setIsUploading(false); return; }
       
-      // Если промокод был использован, увеличиваем счетчик активаций
       if (activePromo) {
-          await supabase.rpc('increment_promo_usage', { promo_id: activePromo.id }); // Нужна SQL функция, или просто update
-          // Простой вариант через update (считывает старое и +1, может сбоить при 1000 одновременных заказов, но для старта ок)
           await supabase.from('promotions').update({ used_count: activePromo.used_count + 1 }).eq('id', activePromo.id);
       }
+
+      // СОХРАНЯЕМ ДАННЫЕ В ПАМЯТЬ ПОСЛЕ УСПЕШНОГО ЗАКАЗА
+      localStorage.setItem('leki_phone', phone);
+      localStorage.setItem('leki_apt', apartment);
+      localStorage.setItem('leki_ent', entrance);
 
       window.Telegram?.WebApp?.close();
     } catch (err) { alert("Ошибка: " + err.message); setIsUploading(false); }
