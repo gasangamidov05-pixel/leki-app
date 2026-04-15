@@ -32,6 +32,7 @@ class AdminStates(StatesGroup):
     waiting_for_yookassa_shop_id = State(); waiting_for_yookassa_secret = State(); waiting_for_support_link = State(); waiting_for_modifier = State()
     promo_res_id = State(); promo_type = State(); promo_code = State()
     promo_value = State(); promo_min = State(); promo_limit = State()
+    waiting_for_min_order = State() # НОВОЕ СОСТОЯНИЕ ДЛЯ МИН ЧЕКА
 
 class CourierStates(StatesGroup): change_city = State()
 
@@ -214,7 +215,6 @@ async def cmd_superadmin(message: types.Message):
 async def superadmin_send_promo(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     
-    # Разбиваем сообщение на 3 части: /send_promo, Город, Текст
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
         return await message.answer("Формат: <code>/send_promo Город Текст сообщения</code>\nИли: <code>/send_promo Всем Текст сообщения</code>", parse_mode="HTML")
@@ -224,12 +224,10 @@ async def superadmin_send_promo(message: types.Message):
     
     conn = await get_db_conn()
     try:
-        # Достаем все заказы, чтобы найти уникальных пользователей и города ресторанов
         rows = await conn.fetch("SELECT o.user_data, r.city FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.user_data IS NOT NULL")
         unique_users = set()
         
         for row in rows:
-            # Если рассылка не "Всем", фильтруем по городу
             if target_city.lower() != "всем" and row['city'].lower() != target_city.lower():
                 continue
             try:
@@ -249,11 +247,8 @@ async def superadmin_send_promo(message: types.Message):
             try:
                 await bot.send_message(uid, promo_text, parse_mode="HTML")
                 success_count += 1
-                # Защита от лимитов Telegram (не более 30 сообщений в секунду)
                 await asyncio.sleep(0.05)
-            except Exception:
-                # Если пользователь заблокировал бота, просто пропускаем его
-                pass
+            except Exception: pass
                 
         await msg.edit_text(f"✅ <b>Рассылка завершена!</b>\nУспешно доставлено: {success_count} из {len(unique_users)}", parse_mode="HTML")
         
@@ -815,6 +810,10 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         can_sd = res.get('can_self_deliver') if res.get('can_self_deliver') is not None else True
         sd_text = "🟢 Вкл" if can_sd else "🔴 Выкл"
         
+        is_min_active = res.get('is_min_order_active')
+        min_amount = res.get('min_order_amount') or 0
+        min_text = f"💰 Мин. заказ: {min_amount}₽ ({'✅' if is_min_active else '❌'})"
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔴 Закрыть" if res.get('is_open') else "🟢 Открыть", callback_data=f"adm_toggle_open_{res['id']}")],
             [InlineKeyboardButton(text=f"🚗 Своя доставка: {sd_text}", callback_data=f"adm_sd_{res['id']}")],
@@ -825,11 +824,60 @@ async def cmd_admin(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="💳 Оплата", callback_data=f"adm_payment_{res['id']}")],
             [
                 InlineKeyboardButton(text=f"📍 Радиус: {res.get('delivery_radius') or 15} км", callback_data=f"adm_radius_{res['id']}"),
-                InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")
-            ]
+                InlineKeyboardButton(text=min_text, callback_data=f"adm_min_order_{res['id']}")
+            ],
+            [InlineKeyboardButton(text="📞 Поддержка", callback_data=f"adm_support_{res['id']}")]
         ])
         await message.answer(f"🛠 <b>Управление: {res['name']}</b>\n💳 Оплачено до: {paid_str}\n\nСтатус: {status}", parse_mode="HTML", reply_markup=kb)
     finally: await conn.close()
+
+# --- МИНИМАЛЬНЫЙ ЗАКАЗ ---
+@dp.callback_query(F.data.startswith("adm_min_order_"))
+async def adm_min_order_menu(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    res = await conn.fetchrow("SELECT is_min_order_active, min_order_amount FROM restaurants WHERE id = $1", res_id)
+    await conn.close()
+    
+    status = "ВКЛЮЧЕН ✅" if res['is_min_order_active'] else "ВЫКЛЮЧЕН ❌"
+    text = f"⚙️ <b>Минимальная сумма заказа</b>\n\nСейчас: <b>{res['min_order_amount']} ₽</b>\nСтатус: <b>{status}</b>"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Вкл / Выкл", callback_data=f"adm_min_toggle_{res_id}")],
+        [InlineKeyboardButton(text="✏️ Изменить сумму", callback_data=f"adm_min_edit_{res_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="adm_cancel")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("adm_min_toggle_"))
+async def adm_min_toggle(callback: CallbackQuery):
+    res_id = int(callback.data.split("_")[3])
+    conn = await get_db_conn()
+    await conn.execute("UPDATE restaurants SET is_min_order_active = NOT is_min_order_active WHERE id = $1", res_id)
+    await conn.close()
+    
+    callback.data = f"adm_min_order_{res_id}"
+    await adm_min_order_menu(callback)
+
+@dp.callback_query(F.data.startswith("adm_min_edit_"))
+async def adm_min_edit_start(callback: CallbackQuery, state: FSMContext):
+    res_id = int(callback.data.split("_")[3])
+    await state.update_data(res_id=res_id)
+    await state.set_state(AdminStates.waiting_for_min_order)
+    await callback.message.answer("Введите минимальную сумму заказа в рублях (только число):")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_min_order)
+async def process_min_order_val(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Пожалуйста, введите только цифры.")
+    data = await state.get_data()
+    conn = await get_db_conn()
+    await conn.execute("UPDATE restaurants SET min_order_amount = $1 WHERE id = $2", int(message.text), data['res_id'])
+    await conn.close()
+    await message.answer(f"✅ Минимальная сумма обновлена: {message.text} ₽")
+    await state.clear()
+    await cmd_admin(message, state)
+
 
 # ==========================================
 #           ПРОМОКОДЫ И АКЦИИ
