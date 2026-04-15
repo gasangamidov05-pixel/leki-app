@@ -442,7 +442,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await message.answer("👑 Добро пожаловать, Администратор! Ваши инструменты управления в меню ниже.", reply_markup=get_admin_main_kb())
         elif is_courier:
             is_own = is_courier['employer_restaurant_id'] is not None
-            text = "🛵 Салам! Твои заказы заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
+            text = "🛵 Салам! Заказы твоего заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
             await message.answer(text, reply_markup=get_courier_main_kb(is_own))
         else:
             await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
@@ -503,7 +503,7 @@ async def get_courier_panel_text(conn, tg_id):
     if not c: return None, None
     
     is_own = c.get('employer_restaurant_id') is not None
-    is_salary = c.get('is_own_courier_salary', True)
+    is_salary = c.get('is_own_courier_salary') if c.get('is_own_courier_salary') is not None else True
     
     if is_own:
         is_paid = True
@@ -630,7 +630,7 @@ async def cour_toggle_status(callback: CallbackQuery):
                 except: pass
         else:
             buffer_sec = 60
-            if is_own: buffer_sec = 0 # Штатные отключаются мгновенно
+            if is_own: buffer_sec = 0 
             else:
                 try:
                     val = await conn.fetchval("SELECT value FROM settings WHERE key = 'courier_buffer_sec'")
@@ -670,7 +670,9 @@ async def show_active_order(callback: CallbackQuery):
         
         c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
         is_own_cour = c and c['employer_restaurant_id'] is not None
-        is_salary = is_own_cour and order.get('is_own_courier_salary', True)
+        
+        salary_val = order.get('is_own_courier_salary')
+        is_salary = is_own_cour and (salary_val if salary_val is not None else True)
 
         items = json.loads(order['items'])
         if isinstance(items, str): items = json.loads(items)
@@ -731,11 +733,12 @@ async def take_order(callback: CallbackQuery):
     try:
         c = await conn.fetchrow("SELECT employer_restaurant_id FROM couriers WHERE tg_id = $1", callback.from_user.id)
         is_own = c and c['employer_restaurant_id'] is not None
-        is_salary = False
         
         if is_own:
-            is_salary = await conn.fetchval("SELECT is_own_courier_salary FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
+            salary_val = await conn.fetchval("SELECT is_own_courier_salary FROM restaurants WHERE id = $1", c['employer_restaurant_id'])
+            is_salary = salary_val if salary_val is not None else True
         else:
+            is_salary = False
             active_count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived')", callback.from_user.id)
             if active_count >= 2:
                 return await callback.answer("🛑 ЛИМИТ! Вы не можете взять больше 2-х заказов одновременно.", show_alert=True)
@@ -744,7 +747,11 @@ async def take_order(callback: CallbackQuery):
         if not order: return await callback.answer("Заказ не найден!", show_alert=True)
         if order['courier_tg_id']: return await callback.answer("Уже занят другим курьером!", show_alert=True)
         
-        await conn.execute("UPDATE orders SET courier_tg_id = $1, status = 'taken' WHERE id = $2", callback.from_user.id, order_id)
+        # АТОМАРНЫЙ ЗАХВАТ ЗАКАЗА (защита от гонки курьеров)
+        res_update = await conn.execute("UPDATE orders SET courier_tg_id = $1, status = 'taken' WHERE id = $2 AND courier_tg_id IS NULL", callback.from_user.id, order_id)
+        if res_update == 'UPDATE 0':
+            return await callback.answer("Кто-то успел забрать этот заказ раньше вас!", show_alert=True)
+
         await notify_restaurant(conn, order_id, "Курьер принял заказ и едет в ресторан 🏃‍♂️")
         await notify_client(conn, order_id, "Мы нашли курьера! Он уже спешит в ресторан. 🏃‍♂️")
         
@@ -934,7 +941,7 @@ async def adm_own_couriers_list(callback: CallbackQuery):
         couriers = await conn.fetch("SELECT * FROM couriers WHERE employer_restaurant_id = $1", res_id)
         text = "🛵 <b>Ваши штатные курьеры:</b>\n\n"
         
-        is_salary = res.get('is_own_courier_salary', True)
+        is_salary = res.get('is_own_courier_salary') if res.get('is_own_courier_salary') is not None else True
         pay_type_text = "Зарплата" if is_salary else "Процент с доставки"
         
         kb = [
@@ -1809,6 +1816,7 @@ async def stuck_order_checker():
                 if val: timeout_min = int(val)
             except: pass
             
+            # ВАЖНО: Исключаем рестораны, у которых есть право иметь своих курьеров, им тревога не нужна
             stuck_orders = await conn.fetch(f"SELECT o.id, o.restaurant_name FROM orders o JOIN restaurants r ON o.restaurant_name = r.name WHERE o.status = 'accepted' AND o.courier_tg_id IS NULL AND o.self_delivery_notified = false AND r.can_have_own_couriers = false AND o.created_at < NOW() - INTERVAL '{timeout_min} minutes'")
             
             for o in stuck_orders:
@@ -1911,10 +1919,12 @@ async def handle_decision(callback: CallbackQuery):
             delivery_fee = order_info['total_price'] - sum([i['price'] * i['count'] for i in items])
             
             is_own_delivery = order_info['can_have_own_couriers']
-            is_salary = order_info.get('is_own_courier_salary', True)
+            salary_val = order_info.get('is_own_courier_salary')
+            is_salary = salary_val if salary_val is not None else True
             
             if is_own_delivery:
-                target_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE employer_restaurant_id = $1", order_info['res_id'])
+                # Шлём ТОЛЬКО активным штатным курьерам
+                target_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE employer_restaurant_id = $1 AND is_active = true", order_info['res_id'])
             else:
                 all_couriers = await conn.fetch("SELECT tg_id, is_active FROM couriers WHERE city = $1 AND employer_restaurant_id IS NULL AND (paid_until > now() OR paid_until IS NULL)", order_info['city'])
                 active_couriers = [c for c in all_couriers if c['is_active']]
@@ -1998,7 +2008,6 @@ async def btn_courier_map(message: types.Message):
 async def btn_support(message: types.Message):
     await message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
 
-# --- НОВОЕ: СПИСОК АКТИВНЫХ ЗАКАЗОВ ДЛЯ КУРЬЕРА ---
 @dp.message(F.text == "📦 Мои заказы")
 async def btn_courier_my_orders(message: types.Message):
     conn = await get_db_conn()
