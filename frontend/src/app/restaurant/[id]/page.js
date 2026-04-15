@@ -275,6 +275,11 @@ export default function RestaurantMenu() {
   const discountAmount = activePromo?.reward_type === 'discount' ? activePromo.discount_rub : 0;
   const totalSumDiscounted = Math.max(0, totalSumRaw - discountAmount);
 
+  // ЛОГИКА МИНИМАЛЬНОГО ЗАКАЗА
+  const minOrderAmount = restaurant?.min_order_amount || 0;
+  const isMinOrderActive = restaurant?.is_min_order_active;
+  const canCheckout = !isMinOrderActive || totalSumRaw >= minOrderAmount;
+
   const applyPromo = () => {
       setPromoError('');
       if (!promoInput.trim()) return;
@@ -525,7 +530,7 @@ export default function RestaurantMenu() {
             </div>
         )}
 
-        {/* --- ОБНОВЛЕННАЯ КОРЗИНА (с промокодом) --- */}
+        {/* --- ОБНОВЛЕННАЯ КОРЗИНА --- */}
         {isCartOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10 max-h-[95vh] overflow-y-auto">
@@ -582,7 +587,6 @@ export default function RestaurantMenu() {
                   )}
               </div>
 
-              {/* ОТОБРАЖЕНИЕ ИТОГОВ СО СКИДКОЙ */}
               {activePromo && (
                   <div className="flex justify-between items-center bg-green-50 p-4 rounded-2xl mb-4 border border-green-100">
                       <span className="font-black text-sm text-green-800">
@@ -594,15 +598,28 @@ export default function RestaurantMenu() {
                   </div>
               )}
 
-              <button onClick={() => {setIsCartOpen(false); setIsCheckoutOpen(true)}} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all flex justify-center gap-2 items-center">
-                Оформить 
-                {activePromo?.reward_type === 'discount' ? (
-                    <div className="flex gap-2 items-center ml-2">
-                        <span className="line-through text-blue-300 text-sm">{totalSumRaw}₽</span>
-                        <span>{totalSumDiscounted} ₽</span>
-                    </div>
+              <button 
+                onClick={() => {
+                  if (!canCheckout) return;
+                  setIsCartOpen(false); 
+                  setIsCheckoutOpen(true);
+                }} 
+                className={`w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all flex justify-center gap-2 items-center ${canCheckout ? 'bg-blue-600 text-white active:scale-95' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+              >
+                {canCheckout ? (
+                  <>
+                    Оформить 
+                    {activePromo?.reward_type === 'discount' ? (
+                        <div className="flex gap-2 items-center ml-2">
+                            <span className="line-through text-blue-300 text-sm">{totalSumRaw}₽</span>
+                            <span>{totalSumDiscounted} ₽</span>
+                        </div>
+                    ) : (
+                        <span>({totalSumRaw} ₽)</span>
+                    )}
+                  </>
                 ) : (
-                    <span>({totalSumRaw} ₽)</span>
+                  <>Мин. заказ от {minOrderAmount} ₽</>
                 )}
               </button>
             </div>
