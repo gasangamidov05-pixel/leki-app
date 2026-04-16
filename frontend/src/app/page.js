@@ -9,11 +9,15 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
 
+// ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
+const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app" 
+
 export default function Home() {
   const router = useRouter()
+  const [isTelegram, setIsTelegram] = useState(true) 
+
   const [restaurants, setRestaurants] = useState([])
   const [isLoading, setIsLoading] = useState(true)
-  const [isTelegram, setIsTelegram] = useState(true) 
   
   const [selectedCity, setSelectedCity] = useState(null)
   const [availableCities, setAvailableCities] = useState([])
@@ -23,15 +27,15 @@ export default function Home() {
   const [myOrders, setMyOrders] = useState([])
 
   useEffect(() => {
-    // 1. ПРОВЕРКА НА ТЕЛЕГРАМ И DEEP LINK
+    // --- ПРОВЕРКА TELEGRAM И DEEP LINK ---
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
-      
       if (!tg || !tg.initData) {
-        setIsTelegram(false);
+        setIsTelegram(false); // Блокируем
+        window.location.href = BOT_APP_URL; // Авто-редирект в бота
         return;
       }
-
+      
       const startParam = tg.initDataUnsafe?.start_param;
       if (startParam && startParam.startsWith('res_')) {
         const resId = startParam.replace('res_', '');
@@ -46,14 +50,12 @@ export default function Home() {
       const now = new Date().toISOString()
       const nowMs = new Date().getTime()
 
-      // 1. Загружаем рестораны
       const { data: resData } = await supabase
         .from('restaurants')
         .select('*, restaurant_ratings(avg_rating)')
         .eq('is_active', true)
         .gt('paid_until', now)
 
-      // 2. Загружаем активные и ПУБЛИЧНЫЕ промокоды
       const { data: promoData } = await supabase
         .from('promotions')
         .select('*')
@@ -61,11 +63,9 @@ export default function Home() {
         .eq('is_secret', false)
 
       if (resData) {
-        // Отфильтровываем просроченные акции
         const validPromos = (promoData || []).filter(p => !p.expires_at || new Date(p.expires_at).getTime() > nowMs)
 
         const formattedRestaurants = resData.map(r => {
-           // Прикрепляем акции к конкретному ресторану
            const rPromos = validPromos.filter(p => p.restaurant_name === r.name)
            return {
              ...r,
@@ -122,7 +122,6 @@ export default function Home() {
 
   const isSpecificCitySelected = selectedCity !== null && selectedCity !== '🌍 Все города' && selectedCity !== 'Все';
 
-  // УМНАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА
   const processedRestaurants = restaurants
     .filter(r => {
       const matchCity = !isSpecificCitySelected || r.city === selectedCity;
@@ -135,7 +134,6 @@ export default function Home() {
           if (!a.is_pinned && b.is_pinned) return 1;
       }
 
-      // ЛОГИКА ОТКРЫТИЯ (Учитываем курьеров и свою доставку)
       const aOpenHours = a.is_open && isRestaurantOpenByHours(a.working_hours);
       const aCanDeliver = (a.can_self_deliver !== false) || (a.has_active_couriers !== false);
       const aFullyOpen = aOpenHours && aCanDeliver;
@@ -176,13 +174,16 @@ export default function Home() {
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">{status}</span>;
   };
 
-  // ЕСЛИ НЕ ТЕЛЕГРАМ - ПОКАЗЫВАЕМ ЗАГЛУШКУ
+  // ЗАГЛУШКА ДЛЯ БРАУЗЕРА С КНОПКОЙ
   if (!isTelegram) {
     return (
       <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
         <span className="text-6xl mb-4">📱</span>
-        <h1 className="text-white text-2xl font-black mb-2">Доступ запрещен</h1>
-        <p className="text-gray-400">Пожалуйста, откройте это приложение внутри Telegram-бота.</p>
+        <h1 className="text-white text-2xl font-black mb-2">Откройте в Telegram</h1>
+        <p className="text-gray-400 mb-8">Для оформления заказа необходимо запустить приложение внутри Telegram.</p>
+        <a href={BOT_APP_URL} className="bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition-all">
+          🚀 Открыть приложение
+        </a>
       </div>
     )
   }
@@ -264,7 +265,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* БЛОК ПРОМОКОДОВ И АКЦИЙ НА КАРТОЧКЕ */}
                   {restaurant.promotions?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mb-4">
                           {restaurant.promotions.map(p => {
@@ -312,7 +312,6 @@ export default function Home() {
           )}
         </div>
 
-        {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
         {isOrdersOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
             <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col shadow-2xl">

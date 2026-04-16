@@ -3,11 +3,14 @@
 import { createClient } from '@supabase/supabase-js'
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import Script from 'next/script'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
+
+// ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
+const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -27,9 +30,13 @@ const parseMods = (modsRaw) => {
 
 export default function RestaurantMenu() {
   const params = useParams()
+  const router = useRouter()
   const mapRef = useRef(null);
   const ymapsRef = useRef(null);
   
+  const [isTelegram, setIsTelegram] = useState(true) // Состояние защиты
+  const [deepLinkUrl, setDeepLinkUrl] = useState(BOT_APP_URL)
+
   const [restaurant, setRestaurant] = useState(null)
   const [products, setProducts] = useState([])
   const [promotions, setPromotions] = useState([]) 
@@ -65,13 +72,27 @@ export default function RestaurantMenu() {
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
   useEffect(() => {
+    // --- ЗАЩИТА ТЕЛЕГРАМ ДЛЯ СТРАНИЦЫ РЕСТОРАНА ---
+    const timer = setTimeout(() => {
+      const tg = window.Telegram?.WebApp;
+      if (!tg || !tg.initData) {
+        setIsTelegram(false);
+        // Формируем ссылку, которая перекинет прямо в этот ресторан внутри ТГ
+        const specificUrl = `${BOT_APP_URL}?startapp=res_${params.id}`;
+        setDeepLinkUrl(specificUrl);
+        window.location.href = specificUrl; // Авто-редирект
+      }
+    }, 500);
+
     const savedPhone = localStorage.getItem('leki_phone');
     const savedApt = localStorage.getItem('leki_apt');
     const savedEnt = localStorage.getItem('leki_ent');
     if (savedPhone) setPhone(savedPhone);
     if (savedApt) setApartment(savedApt);
     if (savedEnt) setEntrance(savedEnt);
-  }, []);
+
+    return () => clearTimeout(timer);
+  }, [params.id]);
 
   useEffect(() => {
     async function fetchData() {
@@ -430,6 +451,20 @@ export default function RestaurantMenu() {
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
   
+  // ЗАГЛУШКА ДЛЯ СТРАНИЦЫ РЕСТОРАНА
+  if (!isTelegram) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
+        <span className="text-6xl mb-4">📱</span>
+        <h1 className="text-white text-2xl font-black mb-2">Откройте в Telegram</h1>
+        <p className="text-gray-400 mb-8">Для заказа из ресторана запустите приложение внутри Telegram.</p>
+        <a href={deepLinkUrl} className="bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition-all">
+          🚀 Открыть в Telegram
+        </a>
+      </div>
+    )
+  }
+
   return (
     <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
