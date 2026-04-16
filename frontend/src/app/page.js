@@ -3,14 +3,17 @@
 import Link from 'next/link'
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import { useRouter } from 'next/navigation'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 export default function Home() {
+  const router = useRouter()
   const [restaurants, setRestaurants] = useState([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isTelegram, setIsTelegram] = useState(true) 
   
   const [selectedCity, setSelectedCity] = useState(null)
   const [availableCities, setAvailableCities] = useState([])
@@ -20,6 +23,22 @@ export default function Home() {
   const [myOrders, setMyOrders] = useState([])
 
   useEffect(() => {
+    // 1. ПРОВЕРКА НА ТЕЛЕГРАМ И DEEP LINK
+    const timer = setTimeout(() => {
+      const tg = window.Telegram?.WebApp;
+      
+      if (!tg || !tg.initData) {
+        setIsTelegram(false);
+        return;
+      }
+
+      const startParam = tg.initDataUnsafe?.start_param;
+      if (startParam && startParam.startsWith('res_')) {
+        const resId = startParam.replace('res_', '');
+        router.push(`/restaurant/${resId}`); 
+      }
+    }, 500);
+
     const savedCity = localStorage.getItem('user_city')
     if (savedCity) setSelectedCity(savedCity)
 
@@ -63,7 +82,9 @@ export default function Home() {
       setIsLoading(false)
     }
     fetchData()
-  }, [])
+
+    return () => clearTimeout(timer);
+  }, [router])
 
   const selectCity = (city) => {
     setSelectedCity(city)
@@ -155,6 +176,17 @@ export default function Home() {
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">{status}</span>;
   };
 
+  // ЕСЛИ НЕ ТЕЛЕГРАМ - ПОКАЗЫВАЕМ ЗАГЛУШКУ
+  if (!isTelegram) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
+        <span className="text-6xl mb-4">📱</span>
+        <h1 className="text-white text-2xl font-black mb-2">Доступ запрещен</h1>
+        <p className="text-gray-400">Пожалуйста, откройте это приложение внутри Telegram-бота.</p>
+      </div>
+    )
+  }
+
   return (
     <main className="min-h-screen p-4 bg-gray-50 text-black">
       <div className="max-w-md mx-auto">
@@ -237,10 +269,13 @@ export default function Home() {
                       <div className="flex flex-wrap gap-2 mb-4">
                           {restaurant.promotions.map(p => {
                               const isDiscount = p.reward_type === 'discount';
-                              const text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
+                              const isFreeDelivery = p.reward_type === 'free_delivery';
+                              let text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
+                              if (isFreeDelivery) text = '🚚 БЕСПЛ. ДОСТАВКА';
                               const minText = p.min_cart_total > 0 ? ` (от ${p.min_cart_total}₽)` : '';
+                              
                               return (
-                                  <div key={p.id} className={`text-[10px] flex items-center px-2.5 py-1.5 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
+                                  <div key={p.id} className={`text-[10px] flex items-center px-2.5 py-1.5 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount || isFreeDelivery ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
                                       <span className="font-black">{text}{minText}</span>
                                       <span className="mx-1.5 opacity-40">|</span>
                                       <span className="font-bold mr-1">КОД:</span>
