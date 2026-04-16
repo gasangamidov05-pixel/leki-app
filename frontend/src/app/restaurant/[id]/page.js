@@ -10,7 +10,7 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
 // ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app"
+const BOT_APP_URL = "https://t.me/Probnayaaa_bot"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
