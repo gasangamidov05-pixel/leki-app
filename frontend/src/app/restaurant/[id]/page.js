@@ -10,7 +10,7 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
 // ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/Probnayaaa_bot"
+const BOT_APP_URL = "https://t.me/Probnayaaa_bot/app"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -34,7 +34,7 @@ export default function RestaurantMenu() {
   const mapRef = useRef(null);
   const ymapsRef = useRef(null);
   
-  const [isTelegram, setIsTelegram] = useState(true) // Состояние защиты
+  const [isTelegram, setIsTelegram] = useState(true)
   const [deepLinkUrl, setDeepLinkUrl] = useState(BOT_APP_URL)
 
   const [restaurant, setRestaurant] = useState(null)
@@ -295,12 +295,10 @@ export default function RestaurantMenu() {
   const discountAmount = activePromo?.reward_type === 'discount' ? activePromo.discount_rub : 0;
   const totalSumDiscounted = Math.max(0, totalSumRaw - discountAmount);
 
-  // ЛОГИКА МИНИМАЛЬНОГО ЗАКАЗА
   const minOrderAmount = restaurant?.min_order_amount || 0;
   const isMinOrderActive = restaurant?.is_min_order_active;
   const canCheckout = !isMinOrderActive || totalSumRaw >= minOrderAmount;
 
-  // ЛОГИКА БЕСПЛАТНОЙ ДОСТАВКИ
   const isFreeDelivery = activePromo?.reward_type === 'free_delivery';
   const finalDeliveryPrice = isFreeDelivery ? 0 : deliveryPrice;
 
@@ -370,7 +368,6 @@ export default function RestaurantMenu() {
       if (apartment.trim()) fullAddressStr += `, кв/офис: ${apartment.trim()}`;
       if (entrance.trim()) fullAddressStr += `, подъезд: ${entrance.trim()}`;
       
-      // Если бесплатная доставка, добавляем скрытый реальный тариф
       fullAddressStr += `\n🚚 Доставка: ${finalDeliveryPrice} ₽`;
       if (isFreeDelivery) fullAddressStr += ` (Тариф: ${deliveryPrice} ₽)`;
       
@@ -459,7 +456,7 @@ export default function RestaurantMenu() {
         <h1 className="text-white text-2xl font-black mb-2">Откройте в Telegram</h1>
         <p className="text-gray-400 mb-8">Для заказа из ресторана запустите приложение внутри Telegram.</p>
         <a href={deepLinkUrl} className="bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition-all">
-          🚀 Открыть в Telegram
+          🚀 Открыть меню в Telegram
         </a>
       </div>
     )
