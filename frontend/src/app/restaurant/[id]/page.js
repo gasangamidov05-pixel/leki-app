@@ -10,7 +10,7 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
 // ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/Probnayaaa_bot/app"
+const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -27,6 +27,31 @@ const parseMods = (modsRaw) => {
     }
     return Array.isArray(modsRaw) ? modsRaw : [];
 }
+
+const isRestaurantOpenByHours = (hoursString) => {
+    if (!hoursString) return true; 
+    try {
+      const [startStr, endStr] = hoursString.split('-');
+      const [startH, startM] = startStr.split(':').map(Number);
+      const [endH, endM] = endStr.split(':').map(Number);
+      
+      const now = new Date();
+      const currentH = now.getHours();
+      const currentM = now.getMinutes();
+      
+      const currentTotal = currentH * 60 + currentM;
+      const startTotal = startH * 60 + startM;
+      const endTotal = endH * 60 + endM;
+
+      if (endTotal < startTotal) {
+          return currentTotal >= startTotal || currentTotal <= endTotal;
+      } else {
+          return currentTotal >= startTotal && currentTotal <= endTotal;
+      }
+    } catch (e) {
+        return true; 
+    }
+};
 
 export default function RestaurantMenu() {
   const params = useParams()
@@ -71,16 +96,21 @@ export default function RestaurantMenu() {
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
+  // НОВОЕ: Состояние для развернутых описаний
+  const [expandedDescriptions, setExpandedDescriptions] = useState({})
+
+  // НОВОЕ: Статус доступности ресторана для заказа
+  const [isOrderingAllowed, setIsOrderingAllowed] = useState(true)
+  const [closedReason, setClosedReason] = useState('')
+
   useEffect(() => {
-    // --- ЗАЩИТА ТЕЛЕГРАМ ДЛЯ СТРАНИЦЫ РЕСТОРАНА ---
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
       if (!tg || !tg.initData) {
         setIsTelegram(false);
-        // Формируем ссылку, которая перекинет прямо в этот ресторан внутри ТГ
         const specificUrl = `${BOT_APP_URL}?startapp=res_${params.id}`;
         setDeepLinkUrl(specificUrl);
-        window.location.href = specificUrl; // Авто-редирект
+        window.location.href = specificUrl; 
       }
     }, 500);
 
@@ -102,12 +132,35 @@ export default function RestaurantMenu() {
       const { data: prod } = await supabase.from('products').select('*').eq('restaurant_id', params.id).order('id')
       setProducts(prod || [])
 
-      if (res?.name) {
+      if (res) {
+          // --- ПРОВЕРКА ДОСТУПНОСТИ РЕСТОРАНА ---
           const nowMs = new Date().getTime();
-          const { data: promos } = await supabase.from('promotions').select('*').eq('restaurant_name', res.name).eq('is_active', true);
-          if (promos) {
-             const validPromos = promos.filter(p => !p.expires_at || new Date(p.expires_at).getTime() > nowMs);
-             setPromotions(validPromos);
+          let allowed = true;
+          let reason = '';
+
+          if (!res.is_active) {
+              allowed = false;
+              reason = 'Заведение временно отключено платформой.';
+          } else if (res.paid_until && new Date(res.paid_until).getTime() < nowMs) {
+              allowed = false;
+              reason = 'Заведение временно не принимает заказы.';
+          } else if (!res.is_open || !isRestaurantOpenByHours(res.working_hours)) {
+              allowed = false;
+              reason = `СЕЙЧАС ЗАКРЫТО (Часы работы: ${res.working_hours || 'Не указаны'})`;
+          } else if (res.can_self_deliver === false && res.has_active_couriers === false) {
+              allowed = false;
+              reason = 'В ДАННЫЙ МОМЕНТ НЕТ СВОБОДНЫХ КУРЬЕРОВ';
+          }
+
+          setIsOrderingAllowed(allowed);
+          setClosedReason(reason);
+
+          if (res.name) {
+             const { data: promos } = await supabase.from('promotions').select('*').eq('restaurant_name', res.name).eq('is_active', true);
+             if (promos) {
+                const validPromos = promos.filter(p => !p.expires_at || new Date(p.expires_at).getTime() > nowMs);
+                setPromotions(validPromos);
+             }
           }
       }
 
@@ -350,6 +403,8 @@ export default function RestaurantMenu() {
 
 
   const sendOrder = async () => {
+    if (!isOrderingAllowed) return;
+
     const isYookassa = restaurant?.payment_method === 'yookassa';
     if (!isYookassa && !receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
@@ -448,7 +503,14 @@ export default function RestaurantMenu() {
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
   
-  // ЗАГЛУШКА ДЛЯ СТРАНИЦЫ РЕСТОРАНА
+  // ФУНКЦИЯ ДЛЯ РАЗВЕРТЫВАНИЯ ТЕКСТА
+  const toggleDescription = (id) => {
+    setExpandedDescriptions(prev => ({
+        ...prev,
+        [id]: !prev[id]
+    }));
+  };
+
   if (!isTelegram) {
     return (
       <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
@@ -480,6 +542,13 @@ export default function RestaurantMenu() {
           <span className="text-gray-400 text-xs font-medium">• Ресторан</span>
         </div>
 
+        {/* БАННЕР ЕСЛИ РЕСТОРАН ЗАКРЫТ */}
+        {!isOrderingAllowed && restaurant && (
+           <div className="bg-red-50 text-red-600 font-black p-4 rounded-2xl border border-red-200 text-center mb-6 shadow-sm">
+               ⚠️ {closedReason}
+           </div>
+        )}
+
         <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
           {categories.map(cat => (
             <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border-2 border-gray-100 text-gray-600'}`}>{cat}</button>
@@ -490,38 +559,58 @@ export default function RestaurantMenu() {
           {filteredProducts.map((item) => {
             const countInCart = getProductTotalCount(item.id);
             const hasMods = parseMods(item.modifiers).length > 0;
+            const isExpanded = expandedDescriptions[item.id];
+            
+            // Проверяем, длинный ли текст (больше 80 символов)
+            const isLongText = item.description && item.description.length > 80;
 
             return (
-                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-center gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
+                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-start gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
                   <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
                     <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
-                    {item.description && <p className="text-xs text-gray-500 mb-1 line-clamp-2">{item.description}</p>}
-                    <p className="text-blue-600 font-black">{item.price} ₽</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {item.is_active !== false ? (
-                        hasMods ? (
-                            <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-4 py-2 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
-                                {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБАВИТЬ'}
-                            </button>
-                        ) : (
-                            <>
-                                {countInCart > 0 && <button onClick={() => removeFromCart(String(item.id))} className="bg-gray-100 text-gray-600 w-9 h-9 rounded-xl font-bold active:scale-95">-</button>}
-                                {countInCart > 0 && <span className="font-bold w-4 text-center">{countInCart}</span>}
-                                <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white w-9 h-9 rounded-xl font-bold shadow-sm active:scale-95">+</button>
-                            </>
-                        )
-                    ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
+                    
+                    {item.description && (
+                        <div className="mb-2" onClick={() => isLongText && toggleDescription(item.id)}>
+                            <p className={`text-xs text-gray-500 transition-all ${isExpanded ? '' : 'line-clamp-2'}`}>
+                                {item.description}
+                            </p>
+                            {isLongText && !isExpanded && (
+                                <span className="text-[10px] text-blue-500 font-bold cursor-pointer mt-0.5 block">Развернуть...</span>
+                            )}
+                        </div>
+                    )}
+
+                    <div className="flex justify-between items-end mt-2">
+                        <p className="text-blue-600 font-black text-lg">{item.price} ₽</p>
+                        
+                        <div className="flex items-center gap-2">
+                            {item.is_active !== false ? (
+                                isOrderingAllowed ? ( // Проверяем, можно ли заказывать
+                                    hasMods ? (
+                                        <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-3 py-1.5 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
+                                            {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБ.'}
+                                        </button>
+                                    ) : (
+                                        <div className="flex items-center">
+                                            {countInCart > 0 && <button onClick={() => removeFromCart(String(item.id))} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-xl font-bold active:scale-95">-</button>}
+                                            {countInCart > 0 && <span className="font-bold w-5 text-center text-sm">{countInCart}</span>}
+                                            <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white w-8 h-8 rounded-xl font-bold shadow-sm active:scale-95">+</button>
+                                        </div>
+                                    )
+                                ) : null 
+                            ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
+                        </div>
+                    </div>
                   </div>
                 </div>
             );
           })}
         </div>
 
-        {totalSumRaw > 0 && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
+        {totalSumRaw > 0 && isOrderingAllowed && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
           <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
             <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
               <span>🛒 Корзина</span><span>{totalSumDiscounted} ₽</span>
