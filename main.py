@@ -78,7 +78,7 @@ def get_courier_main_kb(is_own=False):
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📱 Открыть карту")], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
 
 def get_client_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://fadfoodapp.vercel.app/"))], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="t.me/FadFood_bot/fadfoodapp"))], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
 
 async def get_db_conn(): return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
