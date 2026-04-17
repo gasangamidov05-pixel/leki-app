@@ -8,8 +8,8 @@ import { useParams, useRouter } from 'next/navigation'
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
-// ❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app"
+// ❗️❗️❗️ НОВАЯ ССЫЛКА НА БОТА
+const BOT_APP_URL = "https://t.me/FadFood_bot/app"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -529,406 +529,405 @@ export default function RestaurantMenu() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-black pb-32">
-      {/* ❗️ ЗДЕСЬ СТАРЫЙ СКРИПТ ЯНДЕКС КАРТ */}
-      <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
-
-      {restaurant?.image_url ? (
-        <div className="h-48 relative w-full bg-gray-200">
-           <img src={restaurant.image_url} alt="Cover" className="w-full h-full object-cover" />
-           <div className="absolute inset-0 bg-gradient-to-b from-black/40 to-transparent"></div>
-           <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
-               <Link href="/" className="bg-white/80 backdrop-blur-md p-2 rounded-full shadow-md w-10 h-10 flex items-center justify-center text-xl font-bold">←</Link>
-               <button onClick={openMyOrders} className="bg-white/80 backdrop-blur-md px-4 py-2 rounded-xl text-sm font-bold shadow-md">📜 Заказы</button>
-           </div>
-        </div>
-      ) : (
-        <div className="p-4 max-w-md mx-auto flex justify-between items-center mb-2">
-          <Link href="/" className="text-blue-500 font-bold">← Назад</Link>
-          <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all">
-            📜 Мои заказы
-          </button>
-        </div>
-      )}
-
-      <div className={`max-w-md mx-auto px-4 ${restaurant?.image_url ? '-mt-10 relative z-10 bg-gray-50 rounded-t-[40px] pt-6' : ''}`}>
-        <h1 className="text-3xl font-black mb-1">{restaurant?.name || 'Загрузка...'}</h1>
-        
-        {restaurant?.tags && (
-            <p className="text-xs font-bold text-gray-400 mb-2 uppercase tracking-wide">{restaurant.tags.split(',').join(' • ')}</p>
-        )}
-
-        <div className="flex items-center gap-1 mb-6 text-yellow-500 font-bold">
-          <span>⭐ {restaurant?.rating || '5.0'}</span>
-        </div>
-
-        {!isOrderingAllowed && restaurant && (
-           <div className="bg-red-50 text-red-600 font-black p-4 rounded-2xl border border-red-200 text-center mb-6 shadow-sm">
-               ⚠️ {closedReason}
-           </div>
-        )}
-
-        <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
-          {categories.map(cat => (
-            <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border border-gray-200 text-gray-600'}`}>{cat}</button>
-          ))}
-        </div>
-
-        <div className="grid gap-3">
-          {filteredProducts.map((item) => {
-            const countInCart = getProductTotalCount(item.id);
-            const hasMods = parseMods(item.modifiers).length > 0;
-            const isExpanded = expandedDescriptions[item.id];
-            const isLongText = item.description && item.description.length > 80;
-
-            return (
-                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex items-start gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
-                  <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
-                    <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
-                    
-                    {item.description && (
-                        <div className="mb-2" onClick={() => isLongText && toggleDescription(item.id)}>
-                            <p className={`text-xs text-gray-500 transition-all ${isExpanded ? '' : 'line-clamp-2'}`}>
-                                {item.description}
-                            </p>
-                            {isLongText && !isExpanded && (
-                                <span className="text-[10px] text-blue-500 font-bold cursor-pointer mt-0.5 block">Развернуть...</span>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="flex justify-between items-end mt-2">
-                        <p className="text-blue-600 font-black text-lg">{item.price} ₽</p>
-                        
-                        <div className="flex items-center gap-2">
-                            {item.is_active !== false ? (
-                                isOrderingAllowed ? ( 
-                                    hasMods ? (
-                                        <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-3 py-1.5 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
-                                            {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБ.'}
-                                        </button>
-                                    ) : (
-                                        <div className="flex items-center">
-                                            {countInCart > 0 && <button onClick={() => removeFromCart(String(item.id))} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-xl font-bold active:scale-95">-</button>}
-                                            {countInCart > 0 && <span className="font-bold w-5 text-center text-sm">{countInCart}</span>}
-                                            <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white w-8 h-8 rounded-xl font-bold shadow-sm active:scale-95">+</button>
-                                        </div>
-                                    )
-                                ) : null 
-                            ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
-                        </div>
-                    </div>
-                  </div>
-                </div>
-            );
-          })}
-        </div>
-
-        {totalSumRaw > 0 && isOrderingAllowed && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
-          <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
-            <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
-              <span>🛒 Корзина</span><span>{totalSumDiscounted} ₽</span>
+      <div className="px-4">
+        {restaurant?.image_url ? (
+          <div className="h-48 relative w-full bg-gray-200">
+             <img src={restaurant.image_url} alt="Cover" className="w-full h-full object-cover" />
+             <div className="absolute inset-0 bg-gradient-to-b from-black/40 to-transparent"></div>
+             <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
+                 <Link href="/" className="bg-white/80 backdrop-blur-md p-2 rounded-full shadow-md w-10 h-10 flex items-center justify-center text-xl font-bold">←</Link>
+                 <button onClick={openMyOrders} className="bg-white/80 backdrop-blur-md px-4 py-2 rounded-xl text-sm font-bold shadow-md">📜 Заказы</button>
+             </div>
+          </div>
+        ) : (
+          <div className="p-4 max-w-md mx-auto flex justify-between items-center mb-2">
+            <Link href="/" className="text-blue-500 font-bold">← Назад</Link>
+            <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all">
+              📜 Мои заказы
             </button>
           </div>
         )}
 
-        {/* --- ОКНО ВЫБОРА ДОБАВОК --- */}
-        {selectedProduct && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-                <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 animate-slide-up">
-                    <div className="flex justify-between items-start mb-4">
-                        <div>
-                            <h2 className="text-2xl font-black">{selectedProduct.name}</h2>
-                            <p className="text-blue-600 font-black mt-1">{selectedProduct.price} ₽</p>
-                        </div>
-                        <button onClick={() => setSelectedProduct(null)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
-                    </div>
-                    {selectedProduct.description && <p className="text-sm text-gray-500 mb-6 bg-gray-50 p-3 rounded-xl">{selectedProduct.description}</p>}
-                    
-                    <div className="space-y-3 mb-8 max-h-[40vh] overflow-y-auto pr-2">
-                        <h3 className="font-black text-gray-800 uppercase tracking-wide text-sm mb-4">Добавки по желанию:</h3>
-                        {selectedProduct.parsedMods.map((mod, idx) => {
-                            const isSelected = selectedMods.some(m => m.name === mod.name);
-                            return (
-                                <div key={idx} onClick={() => {
-                                    if (isSelected) setSelectedMods(prev => prev.filter(m => m.name !== mod.name));
-                                    else setSelectedMods(prev => [...prev, mod]);
-                                }} className={`flex justify-between items-center p-4 rounded-2xl border border-gray-100 cursor-pointer transition-all active:scale-95 ${isSelected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'bg-white hover:border-blue-200'}`}>
-                                    <span className="font-bold text-sm">{mod.name}</span>
-                                    <div className="flex items-center gap-3">
-                                        <span className="font-black text-blue-600">+{mod.price} ₽</span>
-                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center border-2 ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-200'}`}>
-                                            {isSelected && '✓'}
-                                        </div>
-                                    </div>
-                                </div>
-                            )
-                        })}
-                    </div>
-                    <button onClick={() => addToCart(selectedProduct, selectedMods)} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
-                        В корзину за {selectedProduct.price + selectedMods.reduce((s,m)=>s+m.price, 0)} ₽
-                    </button>
-                </div>
-            </div>
-        )}
+        <div className={`max-w-md mx-auto ${restaurant?.image_url ? '-mt-10 relative z-10 bg-gray-50 rounded-t-[40px] pt-6 px-4' : ''}`}>
+          <h1 className="text-3xl font-black mb-1">{restaurant?.name || 'Загрузка...'}</h1>
+          
+          {restaurant?.tags && (
+              <p className="text-xs font-bold text-gray-400 mb-2 uppercase tracking-wide">{restaurant.tags.split(',').join(' • ')}</p>
+          )}
 
-        {/* --- ОБНОВЛЕННАЯ КОРЗИНА --- */}
-        {isCartOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10 max-h-[95vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-6">
-                 <h2 className="text-2xl font-black">Ваш заказ</h2>
-                 <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
-              </div>
-              <div className="space-y-6 mb-8 pr-2">
-                {Object.values(cart).map(cItem => {
-                   const modsTotal = cItem.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
-                   return (
-                      <div key={cItem.cartKey} className="flex justify-between items-center border-b border-gray-50 pb-4">
-                        <div className="flex-1 pr-4">
-                            <span className="font-bold block text-sm">{cItem.name}</span>
-                            {cItem.selectedMods?.length > 0 && (
-                                <span className="text-xs text-gray-400 block mt-1 font-medium bg-gray-50 p-1.5 rounded-lg border border-gray-100">
-                                    {cItem.selectedMods.map(m => `+ ${m.name}`).join(', ')}
-                                </span>
-                            )}
-                            <span className="font-black text-blue-600 block mt-1">{(cItem.price + modsTotal)} ₽</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <button onClick={() => removeFromCart(cItem.cartKey)} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">-</button>
-                            <span className="font-black w-3 text-center">{cItem.count}</span>
-                            <button onClick={() => addToCart(cItem, cItem.selectedMods)} className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">+</button>
-                        </div>
-                      </div>
-                   )
-                })}
-              </div>
+          <div className="flex items-center gap-1 mb-6 text-yellow-500 font-bold">
+            <span>⭐ {restaurant?.rating || '5.0'}</span>
+          </div>
 
-              {/* ПОЛЕ ВВОДА ПРОМОКОДА */}
-              <div className="mb-6 bg-gray-50 p-3 rounded-2xl border border-gray-100">
-                  <div className="flex gap-2">
-                      <input 
-                          type="text" 
-                          placeholder="Промокод" 
-                          value={promoInput}
-                          onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
-                          disabled={!!activePromo}
-                          className="w-full min-w-0 px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400 text-sm"
-                      />
-                      {activePromo ? (
-                          <button onClick={removePromo} className="shrink-0 bg-red-100 text-red-600 px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-sm">✕ ОТМЕНА</button>
-                      ) : (
-                          <button onClick={applyPromo} className="shrink-0 bg-gray-900 text-white px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-md">ПРИМЕНИТЬ</button>
+          {!isOrderingAllowed && restaurant && (
+             <div className="bg-red-50 text-red-600 font-black p-4 rounded-2xl border border-red-200 text-center mb-6 shadow-sm">
+                 ⚠️ {closedReason}
+             </div>
+          )}
+
+          <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+            {categories.map(cat => (
+              <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border border-gray-200 text-gray-600'}`}>{cat}</button>
+            ))}
+          </div>
+
+          <div className="grid gap-3">
+            {filteredProducts.map((item) => {
+              const countInCart = getProductTotalCount(item.id);
+              const hasMods = parseMods(item.modifiers).length > 0;
+              const isExpanded = expandedDescriptions[item.id];
+              const isLongText = item.description && item.description.length > 80;
+
+              return (
+                  <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex items-start gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
+                    <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
+                      <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-bold text-md leading-tight mb-1">{item.name}</h3>
+                      
+                      {item.description && (
+                          <div className="mb-2" onClick={() => isLongText && toggleDescription(item.id)}>
+                              <p className={`text-xs text-gray-500 transition-all ${isExpanded ? '' : 'line-clamp-2'}`}>
+                                  {item.description}
+                              </p>
+                              {isLongText && !isExpanded && (
+                                  <span className="text-[10px] text-blue-500 font-bold cursor-pointer mt-0.5 block">Развернуть...</span>
+                              )}
+                          </div>
                       )}
-                  </div>
-                  {promoError && <p className="text-red-500 text-xs font-bold mt-2 pl-1">{promoError}</p>}
-                  {activePromo && (
-                      <p className="text-green-600 text-xs font-black mt-2 pl-1 flex items-center gap-1">
-                          ✅ Успех! {
-                            activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : 
-                            activePromo.reward_type === 'free_delivery' ? 'Бесплатная доставка!' : 
-                            `Подарок: ${activePromo.gift_name}`
-                          }
-                      </p>
-                  )}
-              </div>
 
-              {activePromo && (
-                  <div className="flex justify-between items-center bg-green-50 p-4 rounded-2xl mb-4 border border-green-100">
-                      <span className="font-black text-sm text-green-800">
-                          {activePromo.reward_type === 'discount' ? 'Скидка по промокоду' : 
-                           activePromo.reward_type === 'free_delivery' ? 'Промокод на доставку' : 
-                           '🎁 Ваш подарок'}
-                      </span>
-                      <span className="font-black text-green-700">
-                          {activePromo.reward_type === 'discount' ? `-${activePromo.discount_rub} ₽` : 
-                           activePromo.reward_type === 'free_delivery' ? 'Бесплатно' : 
-                           activePromo.gift_name}
-                      </span>
+                      <div className="flex justify-between items-end mt-2">
+                          <p className="text-blue-600 font-black text-lg">{item.price} ₽</p>
+                          
+                          <div className="flex items-center gap-2">
+                              {item.is_active !== false ? (
+                                  isOrderingAllowed ? ( 
+                                      hasMods ? (
+                                          <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-3 py-1.5 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
+                                              {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБ.'}
+                                          </button>
+                                      ) : (
+                                          <div className="flex items-center">
+                                              {countInCart > 0 && <button onClick={() => removeFromCart(String(item.id))} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-xl font-bold active:scale-95">-</button>}
+                                              {countInCart > 0 && <span className="font-bold w-5 text-center text-sm">{countInCart}</span>}
+                                              <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white w-8 h-8 rounded-xl font-bold shadow-sm active:scale-95">+</button>
+                                          </div>
+                                      )
+                                  ) : null 
+                              ) : <span className="text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded-lg">Стоп</span>}
+                          </div>
+                      </div>
+                    </div>
                   </div>
-              )}
+              );
+            })}
+          </div>
 
-              <button 
-                onClick={() => {
-                  if (!canCheckout) return;
-                  setIsCartOpen(false); 
-                  setIsCheckoutOpen(true);
-                }} 
-                className={`w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all flex justify-center gap-2 items-center ${canCheckout ? 'bg-blue-600 text-white active:scale-95' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >
-                {canCheckout ? (
-                  <>
-                    Оформить 
-                    {activePromo?.reward_type === 'discount' ? (
-                        <div className="flex gap-2 items-center ml-2">
-                            <span className="line-through text-blue-300 text-sm">{totalSumRaw}₽</span>
-                            <span>{totalSumDiscounted} ₽</span>
-                        </div>
-                    ) : (
-                        <span>({totalSumRaw} ₽)</span>
-                    )}
-                  </>
-                ) : (
-                  <>Мин. заказ от {minOrderAmount} ₽</>
-                )}
+          {totalSumRaw > 0 && isOrderingAllowed && !isCartOpen && !isCheckoutOpen && !isOrdersOpen && !selectedProduct && (
+            <div className="fixed bottom-6 left-0 right-0 px-4 z-40">
+              <button onClick={() => setIsCartOpen(true)} className="max-w-md mx-auto w-full bg-blue-600 text-white py-4 rounded-2xl font-black flex justify-between px-8 shadow-2xl active:scale-95 transition-all">
+                <span>🛒 Корзина</span><span>{totalSumDiscounted} ₽</span>
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {isCheckoutOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-black">Доставка</h2>
-                <button onClick={() => setIsCheckoutOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
-              </div>
-
-              <div className="space-y-4">
-                <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
-                
-                <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 text-center mb-2">
-                   <p className="text-sm font-bold text-blue-800 mb-2">Поставьте метку на дом, куда доставить заказ:</p>
-                   <button onClick={getLocation} className="bg-white text-blue-600 font-black px-4 py-2 rounded-xl text-sm shadow-sm active:scale-95 transition-all">📍 Найти меня (GPS)</button>
-                </div>
-
-                <div className="relative w-full h-56 rounded-3xl overflow-hidden border border-gray-200 shadow-inner">
-                  <div id="map_container" className="w-full h-full bg-gray-100 flex items-center justify-center">
-                    {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm animate-pulse">Загрузка карты...</span>}
-                  </div>
-                  {address && (
-                      <div className="absolute bottom-2 left-2 right-2 bg-white/90 backdrop-blur-md p-2 rounded-xl border border-white/50 text-xs font-bold text-center shadow-lg line-clamp-2">
-                          {address}
+          {/* --- ОКНО ВЫБОРА ДОБАВОК --- */}
+          {selectedProduct && (
+              <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+                  <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 animate-slide-up">
+                      <div className="flex justify-between items-start mb-4">
+                          <div>
+                              <h2 className="text-2xl font-black">{selectedProduct.name}</h2>
+                              <p className="text-blue-600 font-black mt-1">{selectedProduct.price} ₽</p>
+                          </div>
+                          <button onClick={() => setSelectedProduct(null)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
                       </div>
-                  )}
+                      {selectedProduct.description && <p className="text-sm text-gray-500 mb-6 bg-gray-50 p-3 rounded-xl">{selectedProduct.description}</p>}
+                      
+                      <div className="space-y-3 mb-8 max-h-[40vh] overflow-y-auto pr-2">
+                          <h3 className="font-black text-gray-800 uppercase tracking-wide text-sm mb-4">Добавки по желанию:</h3>
+                          {selectedProduct.parsedMods.map((mod, idx) => {
+                              const isSelected = selectedMods.some(m => m.name === mod.name);
+                              return (
+                                  <div key={idx} onClick={() => {
+                                      if (isSelected) setSelectedMods(prev => prev.filter(m => m.name !== mod.name));
+                                      else setSelectedMods(prev => [...prev, mod]);
+                                  }} className={`flex justify-between items-center p-4 rounded-2xl border border-gray-100 cursor-pointer transition-all active:scale-95 ${isSelected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'bg-white hover:border-blue-200'}`}>
+                                      <span className="font-bold text-sm">{mod.name}</span>
+                                      <div className="flex items-center gap-3">
+                                          <span className="font-black text-blue-600">+{mod.price} ₽</span>
+                                          <div className={`w-6 h-6 rounded-full flex items-center justify-center border-2 ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-200'}`}>
+                                              {isSelected && '✓'}
+                                          </div>
+                                      </div>
+                                  </div>
+                              )
+                          })}
+                      </div>
+                      <button onClick={() => addToCart(selectedProduct, selectedMods)} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">
+                          В корзину за {selectedProduct.price + selectedMods.reduce((s,m)=>s+m.price, 0)} ₽
+                      </button>
+                  </div>
+              </div>
+          )}
+
+          {/* --- ОБНОВЛЕННАЯ КОРЗИНА --- */}
+          {isCartOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+              <div className="bg-white rounded-t-[40px] p-8 w-full max-w-md mx-auto pb-10 max-h-[95vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-6">
+                   <h2 className="text-2xl font-black">Ваш заказ</h2>
+                   <button onClick={() => setIsCartOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500 flex items-center justify-center">✕</button>
+                </div>
+                <div className="space-y-6 mb-8 pr-2">
+                  {Object.values(cart).map(cItem => {
+                     const modsTotal = cItem.selectedMods?.reduce((s, m) => s + m.price, 0) || 0;
+                     return (
+                        <div key={cItem.cartKey} className="flex justify-between items-center border-b border-gray-50 pb-4">
+                          <div className="flex-1 pr-4">
+                              <span className="font-bold block text-sm">{cItem.name}</span>
+                              {cItem.selectedMods?.length > 0 && (
+                                  <span className="text-xs text-gray-400 block mt-1 font-medium bg-gray-50 p-1.5 rounded-lg border border-gray-100">
+                                      {cItem.selectedMods.map(m => `+ ${m.name}`).join(', ')}
+                                  </span>
+                              )}
+                              <span className="font-black text-blue-600 block mt-1">{(cItem.price + modsTotal)} ₽</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                              <button onClick={() => removeFromCart(cItem.cartKey)} className="bg-gray-100 text-gray-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">-</button>
+                              <span className="font-black w-3 text-center">{cItem.count}</span>
+                              <button onClick={() => addToCart(cItem, cItem.selectedMods)} className="bg-blue-100 text-blue-600 w-8 h-8 rounded-lg font-black active:scale-95 transition-all">+</button>
+                          </div>
+                        </div>
+                     )
+                  })}
                 </div>
 
-                <div className="flex gap-3 mt-2">
-                  <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
-                  <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                {/* ПОЛЕ ВВОДА ПРОМОКОДА */}
+                <div className="mb-6 bg-gray-50 p-3 rounded-2xl border border-gray-100">
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            placeholder="Промокод" 
+                            value={promoInput}
+                            onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                            disabled={!!activePromo}
+                            className="w-full min-w-0 px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400 text-sm"
+                        />
+                        {activePromo ? (
+                            <button onClick={removePromo} className="shrink-0 bg-red-100 text-red-600 px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-sm">✕ ОТМЕНА</button>
+                        ) : (
+                            <button onClick={applyPromo} className="shrink-0 bg-gray-900 text-white px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-md">ПРИМЕНИТЬ</button>
+                        )}
+                    </div>
+                    {promoError && <p className="text-red-500 text-xs font-bold mt-2 pl-1">{promoError}</p>}
+                    {activePromo && (
+                        <p className="text-green-600 text-xs font-black mt-2 pl-1 flex items-center gap-1">
+                            ✅ Успех! {
+                              activePromo.reward_type === 'discount' ? `Скидка ${activePromo.discount_rub} ₽` : 
+                              activePromo.reward_type === 'free_delivery' ? 'Бесплатная доставка!' : 
+                              `Подарок: ${activePromo.gift_name}`
+                            }
+                        </p>
+                    )}
                 </div>
 
-                {restaurant?.can_have_own_couriers && restaurant?.allow_cash_payment && (
-                    <div className="flex bg-gray-100 p-1 rounded-2xl mb-2">
-                        <button 
-                            onClick={() => setPaymentMode('online')} 
-                            className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'online' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
-                        >
-                            💳 Перевод
-                        </button>
-                        <button 
-                            onClick={() => setPaymentMode('cash')} 
-                            className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'cash' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
-                        >
-                            💵 При получении
-                        </button>
+                {activePromo && (
+                    <div className="flex justify-between items-center bg-green-50 p-4 rounded-2xl mb-4 border border-green-100">
+                        <span className="font-black text-sm text-green-800">
+                            {activePromo.reward_type === 'discount' ? 'Скидка по промокоду' : 
+                             activePromo.reward_type === 'free_delivery' ? 'Промокод на доставку' : 
+                             '🎁 Ваш подарок'}
+                        </span>
+                        <span className="font-black text-green-700">
+                            {activePromo.reward_type === 'discount' ? `-${activePromo.discount_rub} ₽` : 
+                             activePromo.reward_type === 'free_delivery' ? 'Бесплатно' : 
+                             activePromo.gift_name}
+                        </span>
                     </div>
                 )}
 
-                {paymentMode === 'cash' ? (
-                   <div className="bg-gray-50 p-5 rounded-3xl space-y-2 mt-2 border border-gray-200 text-center">
-                     <p className="text-sm font-black text-gray-800 uppercase tracking-wide">Оплата при получении</p>
-                     <p className="text-xs font-medium text-gray-500">Оплатите заказ наличными или переводом напрямую курьеру.</p>
-                   </div>
-                ) : (
-                    restaurant?.payment_method === 'yookassa' ? (
-                      <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border border-green-100 text-center">
-                        <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
-                        <p className="text-xs font-medium text-green-700">После оформления бот пришлет вам ссылку на безопасную оплату заказа.</p>
-                      </div>
-                    ) : (
-                      <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border border-dashed border-gray-300 mt-2">
-                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
-                        <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
-                          <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Не указано'}</span>
-                          <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black bg-blue-50 px-2 py-1 rounded-md">КОПИРОВАТЬ</button>
-                        </div>
-                        <p className="text-xs font-bold text-gray-500">
-                          Переведите <span className="text-blue-600">{totalSumDiscounted + finalDeliveryPrice} ₽</span> и прикрепите чек:
-                        </p>
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          onChange={(e) => setReceiptFile(e.target.files[0])}
-                          className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
-                        />
-                      </div>
-                    )
-                )}
-
-                <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
-                  {deliveryError ? (
-                    <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
-                  ) : (
-                    <>
-                      {restaurant?.surge_multiplier > 1.0 && isAddressValid && (
-                         <div className="flex justify-between text-[10px] font-bold text-orange-500">
-                            <span>Повышенный спрос:</span><span>x{restaurant.surge_multiplier}</span>
-                         </div>
-                      )}
-                      {restaurant?.weather_bonus > 0 && isAddressValid && (
-                         <div className="flex justify-between text-[10px] font-bold text-blue-500">
-                            <span>Непогода:</span><span>+{restaurant.weather_bonus} ₽</span>
-                         </div>
-                      )}
-
-                      <div className="flex justify-between text-sm font-bold text-blue-800 border-t border-blue-100 pt-2">
-                          <span>Доставка {isCalculating && '...'}:</span>
-                          <span>
-                            {isAddressValid ? (
-                              isFreeDelivery ? <><span className="line-through text-blue-300 mr-2">{deliveryPrice} ₽</span>0 ₽</> : `${deliveryPrice} ₽`
-                            ) : '--'}
-                          </span>
-                      </div>
-                      <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
-                          <span>Итого к оплате:</span><span>{isAddressValid ? totalSumDiscounted + finalDeliveryPrice : totalSumDiscounted} ₽</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-
                 <button 
-                  onClick={sendOrder} 
-                  disabled={isSubmitDisabled} 
-                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${!isSubmitDisabled ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                  onClick={() => {
+                    if (!canCheckout) return;
+                    setIsCartOpen(false); 
+                    setIsCheckoutOpen(true);
+                  }} 
+                  className={`w-full py-5 rounded-2xl font-black text-lg shadow-xl transition-all flex justify-center gap-2 items-center ${canCheckout ? 'bg-blue-600 text-white active:scale-95' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
                 >
-                  {isUploading ? 'ОБРАБОТКА...' : (restaurant?.payment_method === 'yookassa' && paymentMode !== 'cash' ? 'ПЕРЕЙТИ К ОПЛАТЕ' : 'ПОДТВЕРДИТЬ')}
+                  {canCheckout ? (
+                    <>
+                      Оформить 
+                      {activePromo?.reward_type === 'discount' ? (
+                          <div className="flex gap-2 items-center ml-2">
+                              <span className="line-through text-blue-300 text-sm">{totalSumRaw}₽</span>
+                              <span>{totalSumDiscounted} ₽</span>
+                          </div>
+                      ) : (
+                          <span>({totalSumRaw} ₽)</span>
+                      )}
+                    </>
+                  ) : (
+                    <>Мин. заказ от {minOrderAmount} ₽</>
+                  )}
                 </button>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {isOrdersOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full pb-10 max-h-[85vh] flex flex-col">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-black">Мои заказы</h2>
-                <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
-              </div>
-              <div className="overflow-y-auto space-y-4 pr-2 pb-6">
-                {myOrders.length === 0 ? (
-                  <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
-                ) : (
-                  myOrders.map(o => {
-                    const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
-                    return (
-                      <div key={o.id} className="border-2 border-gray-100 rounded-3xl p-5 shadow-sm bg-white">
-                        <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
-                        <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-blue-100 pl-3">
-                          {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
+          {isCheckoutOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+              <div className="bg-white rounded-t-[40px] p-6 w-full max-w-md mx-auto pb-10 max-h-[90vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-black">Доставка</h2>
+                  <button onClick={() => setIsCheckoutOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
+                </div>
+
+                <div className="space-y-4">
+                  <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
+                  
+                  <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 text-center mb-2">
+                     <p className="text-sm font-bold text-blue-800 mb-2">Поставьте метку на дом, куда доставить заказ:</p>
+                     <button onClick={getLocation} className="bg-white text-blue-600 font-black px-4 py-2 rounded-xl text-sm shadow-sm active:scale-95 transition-all">📍 Найти меня (GPS)</button>
+                  </div>
+
+                  <div className="relative w-full h-56 rounded-3xl overflow-hidden border border-gray-200 shadow-inner">
+                    <div id="map_container" className="w-full h-full bg-gray-100 flex items-center justify-center">
+                      {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm animate-pulse">Загрузка карты...</span>}
+                    </div>
+                    {address && (
+                        <div className="absolute bottom-2 left-2 right-2 bg-white/90 backdrop-blur-md p-2 rounded-xl border border-white/50 text-xs font-bold text-center shadow-lg line-clamp-2">
+                            {address}
                         </div>
-                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-3 mt-2">
+                    <input type="text" value={apartment} onChange={(e) => setApartment(e.target.value)} placeholder="Кв / Офис" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                    <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
+                  </div>
+
+                  {restaurant?.can_have_own_couriers && restaurant?.allow_cash_payment && (
+                      <div className="flex bg-gray-100 p-1 rounded-2xl mb-2">
+                          <button 
+                              onClick={() => setPaymentMode('online')} 
+                              className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'online' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
+                          >
+                              💳 Перевод
+                          </button>
+                          <button 
+                              onClick={() => setPaymentMode('cash')} 
+                              className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'cash' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
+                          >
+                              💵 При получении
+                          </button>
                       </div>
-                    )
-                  })
-                )}
+                  )}
+
+                  {paymentMode === 'cash' ? (
+                     <div className="bg-gray-50 p-5 rounded-3xl space-y-2 mt-2 border border-gray-200 text-center">
+                       <p className="text-sm font-black text-gray-800 uppercase tracking-wide">Оплата при получении</p>
+                       <p className="text-xs font-medium text-gray-500">Оплатите заказ наличными или переводом напрямую курьеру.</p>
+                     </div>
+                  ) : (
+                      restaurant?.payment_method === 'yookassa' ? (
+                        <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border border-green-100 text-center">
+                          <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
+                          <p className="text-xs font-medium text-green-700">После оформления бот пришлет вам ссылку на безопасную оплату заказа.</p>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border border-dashed border-gray-300 mt-2">
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
+                          <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
+                            <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Не указано'}</span>
+                            <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black bg-blue-50 px-2 py-1 rounded-md">КОПИРОВАТЬ</button>
+                          </div>
+                          <p className="text-xs font-bold text-gray-500">
+                            Переведите <span className="text-blue-600">{totalSumDiscounted + finalDeliveryPrice} ₽</span> и прикрепите чек:
+                          </p>
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            onChange={(e) => setReceiptFile(e.target.files[0])}
+                            className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
+                          />
+                        </div>
+                      )
+                  )}
+
+                  <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
+                    {deliveryError ? (
+                      <p className="text-red-500 font-bold text-sm text-center">{deliveryError}</p>
+                    ) : (
+                      <>
+                        {restaurant?.surge_multiplier > 1.0 && isAddressValid && (
+                           <div className="flex justify-between text-[10px] font-bold text-orange-500">
+                              <span>Повышенный спрос:</span><span>x{restaurant.surge_multiplier}</span>
+                           </div>
+                        )}
+                        {restaurant?.weather_bonus > 0 && isAddressValid && (
+                           <div className="flex justify-between text-[10px] font-bold text-blue-500">
+                              <span>Непогода:</span><span>+{restaurant.weather_bonus} ₽</span>
+                           </div>
+                        )}
+
+                        <div className="flex justify-between text-sm font-bold text-blue-800 border-t border-blue-100 pt-2">
+                            <span>Доставка {isCalculating && '...'}:</span>
+                            <span>
+                              {isAddressValid ? (
+                                isFreeDelivery ? <><span className="line-through text-blue-300 mr-2">{deliveryPrice} ₽</span>0 ₽</> : `${deliveryPrice} ₽`
+                              ) : '--'}
+                            </span>
+                        </div>
+                        <div className="flex justify-between font-black text-xl pt-2 border-t border-blue-100 text-blue-900">
+                            <span>Итого к оплате:</span><span>{isAddressValid ? totalSumDiscounted + finalDeliveryPrice : totalSumDiscounted} ₽</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <button 
+                    onClick={sendOrder} 
+                    disabled={isSubmitDisabled} 
+                    className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${!isSubmitDisabled ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                  >
+                    {isUploading ? 'ОБРАБОТКА...' : (restaurant?.payment_method === 'yookassa' && paymentMode !== 'cash' ? 'ПЕРЕЙТИ К ОПЛАТЕ' : 'ПОДТВЕРДИТЬ')}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {isOrdersOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+              <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full pb-10 max-h-[85vh] flex flex-col">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-black">Мои заказы</h2>
+                  <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 w-10 h-10 rounded-full font-bold text-gray-500">✕</button>
+                </div>
+                <div className="overflow-y-auto space-y-4 pr-2 pb-6">
+                  {myOrders.length === 0 ? (
+                    <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
+                  ) : (
+                    myOrders.map(o => {
+                      const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
+                      return (
+                        <div key={o.id} className="border-2 border-gray-100 rounded-3xl p-5 shadow-sm bg-white">
+                          <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
+                          <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-blue-100 pl-3">
+                            {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
+                          </div>
+                          <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   )

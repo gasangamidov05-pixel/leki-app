@@ -9,8 +9,8 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
 
-// ❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/Probnayaaa_bot/app" 
+// ❗️❗️❗️ НОВАЯ ССЫЛКА НА БОТА
+const BOT_APP_URL = "https://t.me/FadFood_bot/app" 
 
 export default function Home() {
   const router = useRouter()
@@ -29,7 +29,6 @@ export default function Home() {
   const [myOrders, setMyOrders] = useState([])
 
   useEffect(() => {
-    // ВЕРНУЛИ СТАРУЮ НАДЕЖНУЮ ПРОВЕРКУ
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
       if (!tg || !tg.initData) {
@@ -201,7 +200,8 @@ export default function Home() {
         <div className="max-w-md mx-auto">
           <div className="flex justify-between items-start mb-4 pt-6">
             <div>
-              <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">FAD</h1>
+              {/* ❗️ НОВОЕ ИМЯ ЗДЕСЬ */}
+              <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">FadFood</h1>
               <div className="flex flex-col">
                  <span className="text-[10px] text-gray-400 uppercase font-black tracking-tighter">Ваш город:</span>
                  <select 
