@@ -1471,11 +1471,64 @@ async def adm_stat_calc(callback: CallbackQuery):
             date_filter = "AND created_at >= CURRENT_DATE - INTERVAL '30 days'"
             period_text = "за 30 дней"
 
-        query = f"""SELECT COUNT(*) as total_orders, COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_orders, COUNT(*) FILTER (WHERE status = 'completed') as completed_orders, SUM(total_price) FILTER (WHERE status = 'completed') as total_revenue, COUNT(*) FILTER (WHERE payment_id IS NOT NULL) as online_payments, COUNT(*) FILTER (WHERE payment_id IS NULL) as manual_payments FROM orders WHERE restaurant_name = $1 AND status NOT IN ('new', 'awaiting_payment') {date_filter}"""
-        stats = await conn.fetchrow(query, res_name)
+        # Достаем все нужные заказы, чтобы аккуратно посчитать выручку без доставки
+        query = f"""
+            SELECT total_price, address, payment_id 
+            FROM orders 
+            WHERE restaurant_name = $1 
+            AND status = 'completed' 
+            {date_filter}
+        """
+        completed_orders = await conn.fetch(query, res_name)
+        
+        # Считаем базовую статистику по отменам
+        query_counts = f"""
+            SELECT 
+                COUNT(*) as total_orders, 
+                COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_orders
+            FROM orders 
+            WHERE restaurant_name = $1 
+            AND status NOT IN ('new', 'awaiting_payment') 
+            {date_filter}
+        """
+        counts = await conn.fetchrow(query_counts, res_name)
+
+        food_revenue = 0
+        delivery_revenue = 0
+        online_payments = 0
+        manual_payments = 0
+
+        # Построчный разбор каждого успешного чека
+        for order in completed_orders:
+            t_price = order['total_price'] or 0
+            
+            # Выковыриваем стоимость доставки из адреса (Тариф: или Доставка:)
+            d_fee = 0
+            if order['address']:
+                fee_match_tariff = re.search(r'Тариф: (\d+) ₽', order['address'])
+                if fee_match_tariff: 
+                    d_fee = int(fee_match_tariff.group(1))
+                else:
+                    fee_match_del = re.search(r'🚚 Доставка: (\d+) ₽', order['address'])
+                    if fee_match_del: 
+                        d_fee = int(fee_match_del.group(1))
+            
+            delivery_revenue += d_fee
+            food_revenue += max(0, t_price - d_fee) # Выручка чистая, только за еду!
+
+            if order['payment_id']:
+                online_payments += 1
+            else:
+                manual_payments += 1
+
         text = (f"📊 <b>Статистика: {res_name}</b> ({period_text})\n\n"
-                f"📦 Всего заказов: <b>{stats['total_orders'] or 0}</b>\n✅ Успешно: <b>{stats['completed_orders'] or 0}</b>\n❌ Отменено: <b>{stats['cancelled_orders'] or 0}</b>\n\n"
-                f"💵 Выручка (с доставкой): <b>{stats['total_revenue'] or 0} ₽</b>\n\n💳 ЮKassa: <b>{stats['online_payments'] or 0}</b> | Перевод: <b>{stats['manual_payments'] or 0}</b>")
+                f"📦 Всего заказов: <b>{counts['total_orders'] or 0}</b>\n"
+                f"✅ Успешно: <b>{len(completed_orders)}</b>\n"
+                f"❌ Отменено: <b>{counts['cancelled_orders'] or 0}</b>\n\n"
+                f"🍔 Выручка (только ЕДА): <b>{food_revenue} ₽</b>\n"
+                f"🚚 Оплачено за доставку: <b>{delivery_revenue} ₽</b>\n\n"
+                f"💳 ЮKassa: <b>{online_payments}</b> | Перевод: <b>{manual_payments}</b>")
+                
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data=f"adm_stats_{res_id}")],
             [InlineKeyboardButton(text="🏠 В главное меню", callback_data="adm_cancel")]
