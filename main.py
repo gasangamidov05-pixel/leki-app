@@ -78,7 +78,7 @@ def get_courier_main_kb(is_own=False):
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📱 Открыть карту")], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
 
 def get_client_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://fad-app.vercel.app/"))], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://leki-app.vercel.app/"))], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
 
 async def get_db_conn(): return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
@@ -198,7 +198,7 @@ async def courier_monitor():
 async def cmd_superadmin(message: types.Message):
     if message.from_user.id != MAIN_ADMIN_ID: return
     text = (
-        "👑 <b>ПАНЕЛЬ СУПЕР-АДМИНА FAD</b>\n\n"
+        "👑 <b>ПАНЕЛЬ СУПЕР-АДМИНА LEKI</b>\n\n"
         "<b>📦 Курьеры:</b>\n"
         "• <code>/add_courier ID Имя</code> | <code>/del_courier ID</code> | <code>/courier_stats</code>\n\n"
         "<b>💳 Биллинг:</b>\n"
@@ -381,7 +381,7 @@ async def superadmin_stats(message: types.Message):
     try:
         if len(args) < 2:
             res_list = await conn.fetch("SELECT id, name, city FROM restaurants ORDER BY id")
-            text = "📊 <b>Система аналитики FAD</b>\n\nОтправьте <code>/stats ID</code>\n\n<b>Заведения:</b>\n"
+            text = "📊 <b>Система аналитики LEKI</b>\n\nОтправьте <code>/stats ID</code>\n\n<b>Заведения:</b>\n"
             for r in res_list: text += f"ID: {r['id']} — <b>{r['name']}</b> ({r['city']})\n"
             return await message.answer(text, parse_mode="HTML")
         res_id = int(args[1])
@@ -442,7 +442,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             text = "🛵 Салам! Заказы твоего заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
             await message.answer(text, reply_markup=get_courier_main_kb(is_own))
         else:
-            await message.answer("Ассаламу алейкум! Добро пожаловать в FAD.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
+            await message.answer("Ассаламу алейкум! Добро пожаловать в LEKI.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
     finally:
         await conn.close()
 
@@ -533,7 +533,7 @@ async def get_courier_panel_text(conn, tg_id):
     kb = []
     
     if not is_own:
-        kb.append([InlineKeyboardButton(text="📱 ОТКРЫТЬ КАРТУ (Приложение)", web_app=WebAppInfo(url="https://fad-app.vercel.app/courier"))])
+        kb.append([InlineKeyboardButton(text="📱 ОТКРЫТЬ КАРТУ (Приложение)", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))])
     
     active_order = await conn.fetchrow("SELECT id FROM orders WHERE courier_tg_id = $1 AND status IN ('taken', 'delivering', 'arrived') LIMIT 1", tg_id)
     if active_order: kb.append([InlineKeyboardButton(text="📦 Мой текущий заказ", callback_data=f"cour_active_{active_order['id']}")])
@@ -1820,7 +1820,7 @@ async def adm_card(callback: CallbackQuery, state: FSMContext):
 async def process_card(message: types.Message, state: FSMContext):
     conn = await get_db_conn()
     try:
-        await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2", message.text, message.from_user.id)
+        await conn.execute("UPDATE restaurants SET card_number = $1 WHERE admin_tg_id = $2", message.text, message.fromuser.id)
         await message.answer("✅ Обновлено!")
         await state.clear()
         await cmd_admin(message, state)
@@ -2112,7 +2112,7 @@ async def btn_courier_map(message: types.Message):
         if c and c['employer_restaurant_id'] is not None: return  
     finally: await conn.close()
         
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 ОТКРЫТЬ ПРИЛОЖЕНИЕ", web_app=WebAppInfo(url="https://fad-app.vercel.app/courier"))]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 ОТКРЫТЬ ПРИЛОЖЕНИЕ", web_app=WebAppInfo(url="https://leki-app.vercel.app/courier"))]])
     await message.answer("Твоя карта заказов:", reply_markup=kb)
 
 @dp.message(F.text == "🆘 Поддержка")

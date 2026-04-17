@@ -4,7 +4,6 @@ import { createClient } from '@supabase/supabase-js'
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import Script from 'next/script'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
@@ -530,6 +529,7 @@ export default function RestaurantMenu() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-black pb-32">
+      {/* ❗️ ЗДЕСЬ СТАРЫЙ СКРИПТ ЯНДЕКС КАРТ */}
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
 
       {restaurant?.image_url ? (
