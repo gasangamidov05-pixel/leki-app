@@ -2108,7 +2108,7 @@ async def handle_decision(callback: CallbackQuery):
 # ❗️ ЗДЕСЬ НОВЫЙ ОБРАБОТЧИК КНОПКИ ПОДДЕРЖКИ ДЛЯ КЛИЕНТА
 @dp.callback_query(F.data == "client_support")
 async def client_support_cb(callback: CallbackQuery):
-    await callback.message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
+    await callback.message.answer("🆘 Возникли трудности? Пишите нам: @Fadfood_support\nМы поможем!")
     await callback.answer()
 
 @dp.message(F.text == "🏠 Панель управления")
@@ -2132,7 +2132,7 @@ async def btn_courier_map(message: types.Message):
 
 @dp.message(F.text == "🆘 Поддержка")
 async def btn_support(message: types.Message):
-    await message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
+    await message.answer("🆘 Возникли трудности? Пишите нам: @Fadfood_support\nМы поможем!")
 
 @dp.message(F.text == "📦 Мои заказы")
 async def btn_courier_my_orders(message: types.Message):
