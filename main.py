@@ -77,8 +77,12 @@ def get_courier_main_kb(is_own=False):
     if is_own: return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📦 Мои заказы")], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🛵 Личный кабинет"), KeyboardButton(text="📱 Открыть карту")], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
 
+# ❗️ ЗДЕСЬ КНОПКИ КЛИЕНТА СТАЛИ ИНЛАЙНОВЫМИ
 def get_client_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://fadfoodapp.vercel.app/"))], [KeyboardButton(text="🆘 Поддержка")]], resize_keyboard=True)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍔 Заказать еду", web_app=WebAppInfo(url="https://fadfoodapp.vercel.app/"))],
+        [InlineKeyboardButton(text="🆘 Поддержка", callback_data="client_support")]
+    ])
 
 async def get_db_conn(): return await asyncpg.connect(DB_URL, statement_cache_size=0)
 
@@ -442,7 +446,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
             text = "🛵 Салам! Заказы твоего заведения ждут тебя в меню." if is_own else "🛵 Салам, коллега! Твои заказы и карта ждут тебя в меню."
             await message.answer(text, reply_markup=get_courier_main_kb(is_own))
         else:
-            await message.answer("Ассаламу алейкум! Добро пожаловать в FadFood.\nИспользуйте меню внизу, чтобы заказать вкусную еду!", reply_markup=get_client_main_kb())
+            # ❗️ ИЗМЕНИЛ ТЕКСТ ПОД ИНЛАЙН-КНОПКУ И ДОБАВИЛ ОТПРАВКУ ИНЛАЙН МЕНЮ
+            await message.answer(
+                "Ассаламу алейкум! Добро пожаловать в FadFood.\nНажмите на кнопку ниже, чтобы открыть приложение и заказать вкусную еду!", 
+                reply_markup=get_client_main_kb()
+            )
     finally:
         await conn.close()
 
@@ -2096,6 +2104,13 @@ async def handle_decision(callback: CallbackQuery):
 # ==========================================
 #           ОБРАБОТКА НИЖНЕГО МЕНЮ И RESEND
 # ==========================================
+
+# ❗️ ЗДЕСЬ НОВЫЙ ОБРАБОТЧИК КНОПКИ ПОДДЕРЖКИ ДЛЯ КЛИЕНТА
+@dp.callback_query(F.data == "client_support")
+async def client_support_cb(callback: CallbackQuery):
+    await callback.message.answer("🆘 Возникли трудности? Пишите нам: @gasangamidov\nМы поможем!")
+    await callback.answer()
+
 @dp.message(F.text == "🏠 Панель управления")
 async def btn_admin_panel(message: types.Message, state: FSMContext):
     await cmd_admin(message, state)
