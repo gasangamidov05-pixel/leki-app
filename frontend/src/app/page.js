@@ -23,7 +23,6 @@ export default function Home() {
   const [availableCities, setAvailableCities] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   
-  // НОВОЕ: Глобальные теги
   const [activeGlobalTag, setActiveGlobalTag] = useState('Все')
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
@@ -124,7 +123,6 @@ export default function Home() {
 
   const isSpecificCitySelected = selectedCity !== null && selectedCity !== '🌍 Все города' && selectedCity !== 'Все';
 
-  // СОБИРАЕМ ВСЕ ТЕГИ
   const allTags = ['Все', ...new Set(restaurants.flatMap(r => r.tags ? r.tags.split(',').map(t => t.trim()) : []).filter(Boolean))]
 
   const processedRestaurants = restaurants
@@ -132,7 +130,6 @@ export default function Home() {
       const matchCity = !isSpecificCitySelected || r.city === selectedCity;
       const matchSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
       
-      // Фильтр по глобальному тегу
       const resTags = r.tags ? r.tags.split(',').map(t => t.trim().toLowerCase()) : [];
       const matchTag = activeGlobalTag === 'Все' || resTags.includes(activeGlobalTag.toLowerCase());
 
@@ -232,7 +229,6 @@ export default function Home() {
             />
           </div>
 
-          {/* НОВОЕ: Лента тегов */}
           {!isLoading && allTags.length > 1 && (
             <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
               {allTags.map(tag => (
@@ -270,7 +266,6 @@ export default function Home() {
                 return (
                   <div key={restaurant.id} className={`bg-white rounded-[32px] shadow-sm border overflow-hidden ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all flex flex-col ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
                     
-                    {/* ОБЛОЖКА РЕСТОРАНА */}
                     {restaurant.image_url && (
                         <div className="relative h-36 bg-gray-100 w-full overflow-hidden">
                             <img src={restaurant.image_url} alt={restaurant.name} className="w-full h-full object-cover" />
@@ -304,7 +299,6 @@ export default function Home() {
                           </div>
                         </div>
 
-                        {/* ТЕГИ */}
                         {restaurant.tags && (
                             <p className="text-xs font-bold text-gray-400 mb-4 line-clamp-1">{restaurant.tags.split(',').join(' • ')}</p>
                         )}
@@ -357,7 +351,6 @@ export default function Home() {
             )}
           </div>
 
-          {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
           {isOrdersOpen && (
             <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
               <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col shadow-2xl">
