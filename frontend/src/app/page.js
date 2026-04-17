@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
+import Script from 'next/script'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -42,7 +43,7 @@ export default function Home() {
         const resId = startParam.replace('res_', '');
         router.push(`/restaurant/${resId}`); 
       }
-    }, 500);
+    }, 1500);
 
     const savedCity = localStorage.getItem('user_city')
     if (savedCity) setSelectedCity(savedCity)
@@ -196,6 +197,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-black">
+      {/* ❗️ ВОТ ЭТОТ СКРИПТ Я ЗАБЫЛ В ПРОШЛЫЙ РАЗ ❗️ */}
+      <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
       <div className="px-4">
         <div className="max-w-md mx-auto">
           <div className="flex justify-between items-start mb-4 pt-6">

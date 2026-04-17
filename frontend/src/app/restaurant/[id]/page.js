@@ -87,6 +87,8 @@ export default function RestaurantMenu() {
   const [apartment, setApartment] = useState('')
   const [entrance, setEntrance] = useState('')
 
+  const [paymentMode, setPaymentMode] = useState('online') 
+
   const [receiptFile, setReceiptFile] = useState(null)
   const [isUploading, setIsUploading] = useState(false)
 
@@ -96,10 +98,7 @@ export default function RestaurantMenu() {
   const [isAddressValid, setIsAddressValid] = useState(false)
   const [isMapApiLoaded, setIsMapApiLoaded] = useState(false)
 
-  // НОВОЕ: Состояние для развернутых описаний
   const [expandedDescriptions, setExpandedDescriptions] = useState({})
-
-  // НОВОЕ: Статус доступности ресторана для заказа
   const [isOrderingAllowed, setIsOrderingAllowed] = useState(true)
   const [closedReason, setClosedReason] = useState('')
 
@@ -112,7 +111,7 @@ export default function RestaurantMenu() {
         setDeepLinkUrl(specificUrl);
         window.location.href = specificUrl; 
       }
-    }, 500);
+    }, 1500);
 
     const savedPhone = localStorage.getItem('leki_phone');
     const savedApt = localStorage.getItem('leki_apt');
@@ -133,7 +132,6 @@ export default function RestaurantMenu() {
       setProducts(prod || [])
 
       if (res) {
-          // --- ПРОВЕРКА ДОСТУПНОСТИ РЕСТОРАНА ---
           const nowMs = new Date().getTime();
           let allowed = true;
           let reason = '';
@@ -149,7 +147,7 @@ export default function RestaurantMenu() {
               reason = `СЕЙЧАС ЗАКРЫТО (Часы работы: ${res.working_hours || 'Не указаны'})`;
           } else if (res.can_self_deliver === false && res.has_active_couriers === false) {
               allowed = false;
-              reason = 'В ДАННЫЙ МОМЕНТ НЕТ СВОБОДНЫХ КУРЬЕРОВ';
+              reason = 'В ДАННЫЙ МОМЕНТ НЕТ СВОБОДНЫХ НИ КУРЬЕРОВ';
           }
 
           setIsOrderingAllowed(allowed);
@@ -406,12 +404,12 @@ export default function RestaurantMenu() {
     if (!isOrderingAllowed) return;
 
     const isYookassa = restaurant?.payment_method === 'yookassa';
-    if (!isYookassa && !receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
+    if (!isYookassa && paymentMode !== 'cash' && !receiptFile) return alert("Пожалуйста, прикрепите чек об оплате!");
 
     setIsUploading(true);
     try {
       let publicUrl = null;
-      if (!isYookassa && receiptFile) {
+      if (!isYookassa && paymentMode !== 'cash' && receiptFile) {
         const fileExt = receiptFile.name.split('.').pop();
         const fileName = `${Math.random()}.${fileExt}`;
         const { error: uploadError } = await supabase.storage.from('receipts').upload(fileName, receiptFile);
@@ -436,6 +434,10 @@ export default function RestaurantMenu() {
           }
       }
 
+      if (paymentMode === 'cash') {
+          fullAddressStr += `\n💵 Оплата: Наличными при получении\n💰 ВЗЯТЬ С КЛИЕНТА: ${totalSumDiscounted + finalDeliveryPrice} ₽`;
+      }
+
       const coords = mapRef.current ? mapRef.current.placemark.geometry.getCoordinates() : null;
 
       const orderItems = Object.values(cart).map(item => {
@@ -455,7 +457,7 @@ export default function RestaurantMenu() {
         restaurant_name: restaurant?.name,
         items: orderItems,
         total_price: totalSumDiscounted + finalDeliveryPrice, 
-        status: isYookassa ? 'awaiting_payment' : 'new', 
+        status: (isYookassa && paymentMode !== 'cash') ? 'awaiting_payment' : 'new', 
         user_data: window.Telegram?.WebApp?.initDataUnsafe?.user || { first_name: 'Web User' },
         phone,
         address: fullAddressStr,
@@ -503,12 +505,8 @@ export default function RestaurantMenu() {
   const categories = ['Все', ...new Set(products.map(p => p.category || 'Основное'))]
   const filteredProducts = activeCategory === 'Все' ? products : products.filter(p => (p.category || 'Основное') === activeCategory)
   
-  // ФУНКЦИЯ ДЛЯ РАЗВЕРТЫВАНИЯ ТЕКСТА
   const toggleDescription = (id) => {
-    setExpandedDescriptions(prev => ({
-        ...prev,
-        [id]: !prev[id]
-    }));
+    setExpandedDescriptions(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   if (!isTelegram) {
@@ -524,25 +522,46 @@ export default function RestaurantMenu() {
     )
   }
 
+  const isSubmitDisabled = !isAddressValid || 
+                           phone.replace(/\D/g, '').length !== 11 || 
+                           (paymentMode !== 'cash' && !receiptFile && restaurant?.payment_method !== 'yookassa') || 
+                           isUploading;
+
   return (
-    <main className="min-h-screen bg-gray-50 p-4 text-black pb-32">
+    <main className="min-h-screen bg-gray-50 text-black pb-32">
+      {/* ❗️ ВОТ ЭТОТ СКРИПТ Я ЗАБЫЛ В ПРОШЛЫЙ РАЗ ❗️ */}
+      <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
 
-      <div className="max-w-md mx-auto">
-        <div className="flex justify-between items-center mb-6">
+      {restaurant?.image_url ? (
+        <div className="h-48 relative w-full bg-gray-200">
+           <img src={restaurant.image_url} alt="Cover" className="w-full h-full object-cover" />
+           <div className="absolute inset-0 bg-gradient-to-b from-black/40 to-transparent"></div>
+           <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
+               <Link href="/" className="bg-white/80 backdrop-blur-md p-2 rounded-full shadow-md w-10 h-10 flex items-center justify-center text-xl font-bold">←</Link>
+               <button onClick={openMyOrders} className="bg-white/80 backdrop-blur-md px-4 py-2 rounded-xl text-sm font-bold shadow-md">📜 Заказы</button>
+           </div>
+        </div>
+      ) : (
+        <div className="p-4 max-w-md mx-auto flex justify-between items-center mb-2">
           <Link href="/" className="text-blue-500 font-bold">← Назад</Link>
           <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all">
             📜 Мои заказы
           </button>
         </div>
+      )}
 
+      <div className={`max-w-md mx-auto px-4 ${restaurant?.image_url ? '-mt-10 relative z-10 bg-gray-50 rounded-t-[40px] pt-6' : ''}`}>
         <h1 className="text-3xl font-black mb-1">{restaurant?.name || 'Загрузка...'}</h1>
+        
+        {restaurant?.tags && (
+            <p className="text-xs font-bold text-gray-400 mb-2 uppercase tracking-wide">{restaurant.tags.split(',').join(' • ')}</p>
+        )}
+
         <div className="flex items-center gap-1 mb-6 text-yellow-500 font-bold">
           <span>⭐ {restaurant?.rating || '5.0'}</span>
-          <span className="text-gray-400 text-xs font-medium">• Ресторан</span>
         </div>
 
-        {/* БАННЕР ЕСЛИ РЕСТОРАН ЗАКРЫТ */}
         {!isOrderingAllowed && restaurant && (
            <div className="bg-red-50 text-red-600 font-black p-4 rounded-2xl border border-red-200 text-center mb-6 shadow-sm">
                ⚠️ {closedReason}
@@ -551,7 +570,7 @@ export default function RestaurantMenu() {
 
         <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
           {categories.map(cat => (
-            <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border-2 border-gray-100 text-gray-600'}`}>{cat}</button>
+            <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-5 py-2.5 rounded-xl whitespace-nowrap font-bold transition-all ${activeCategory === cat ? 'bg-blue-600 text-white shadow-md' : 'bg-white border border-gray-200 text-gray-600'}`}>{cat}</button>
           ))}
         </div>
 
@@ -560,12 +579,10 @@ export default function RestaurantMenu() {
             const countInCart = getProductTotalCount(item.id);
             const hasMods = parseMods(item.modifiers).length > 0;
             const isExpanded = expandedDescriptions[item.id];
-            
-            // Проверяем, длинный ли текст (больше 80 символов)
             const isLongText = item.description && item.description.length > 80;
 
             return (
-                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border-2 border-transparent flex items-start gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
+                <div key={item.id} className={`bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex items-start gap-4 ${item.is_active === false ? 'opacity-50 grayscale' : ''}`}>
                   <div className="w-20 h-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
                     <img src={item.image_url || 'https://via.placeholder.com/150'} className="w-full h-full object-cover" />
                   </div>
@@ -588,7 +605,7 @@ export default function RestaurantMenu() {
                         
                         <div className="flex items-center gap-2">
                             {item.is_active !== false ? (
-                                isOrderingAllowed ? ( // Проверяем, можно ли заказывать
+                                isOrderingAllowed ? ( 
                                     hasMods ? (
                                         <button onClick={() => handleAddToCartClick(item)} className="bg-blue-500 text-white px-3 py-1.5 rounded-xl font-bold shadow-sm text-xs active:scale-95 transition-all">
                                             {countInCart > 0 ? `ЕЩЁ (${countInCart})` : '+ ДОБ.'}
@@ -639,7 +656,7 @@ export default function RestaurantMenu() {
                                 <div key={idx} onClick={() => {
                                     if (isSelected) setSelectedMods(prev => prev.filter(m => m.name !== mod.name));
                                     else setSelectedMods(prev => [...prev, mod]);
-                                }} className={`flex justify-between items-center p-4 rounded-2xl border-2 cursor-pointer transition-all active:scale-95 ${isSelected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-gray-100 bg-white hover:border-blue-200'}`}>
+                                }} className={`flex justify-between items-center p-4 rounded-2xl border border-gray-100 cursor-pointer transition-all active:scale-95 ${isSelected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'bg-white hover:border-blue-200'}`}>
                                     <span className="font-bold text-sm">{mod.name}</span>
                                     <div className="flex items-center gap-3">
                                         <span className="font-black text-blue-600">+{mod.price} ₽</span>
@@ -699,7 +716,7 @@ export default function RestaurantMenu() {
                           value={promoInput}
                           onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
                           disabled={!!activePromo}
-                          className="w-full min-w-0 px-3 py-2 border-2 border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400 text-sm"
+                          className="w-full min-w-0 px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-bold uppercase disabled:bg-gray-100 disabled:text-gray-400 text-sm"
                       />
                       {activePromo ? (
                           <button onClick={removePromo} className="shrink-0 bg-red-100 text-red-600 px-3 py-2 rounded-xl font-bold active:scale-95 text-xs shadow-sm">✕ ОТМЕНА</button>
@@ -773,12 +790,12 @@ export default function RestaurantMenu() {
               <div className="space-y-4">
                 <input type="tel" value={phone} onChange={handlePhoneInput} placeholder="+7 (999) 000-00-00" className="w-full border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-bold"/>
                 
-                <div className="bg-blue-50 p-4 rounded-2xl border-2 border-blue-100 text-center mb-2">
+                <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 text-center mb-2">
                    <p className="text-sm font-bold text-blue-800 mb-2">Поставьте метку на дом, куда доставить заказ:</p>
                    <button onClick={getLocation} className="bg-white text-blue-600 font-black px-4 py-2 rounded-xl text-sm shadow-sm active:scale-95 transition-all">📍 Найти меня (GPS)</button>
                 </div>
 
-                <div className="relative w-full h-56 rounded-3xl overflow-hidden border-2 border-gray-200 shadow-inner">
+                <div className="relative w-full h-56 rounded-3xl overflow-hidden border border-gray-200 shadow-inner">
                   <div id="map_container" className="w-full h-full bg-gray-100 flex items-center justify-center">
                     {!isMapApiLoaded && <span className="text-gray-400 font-bold text-sm animate-pulse">Загрузка карты...</span>}
                   </div>
@@ -794,28 +811,52 @@ export default function RestaurantMenu() {
                   <input type="text" value={entrance} onChange={(e) => setEntrance(e.target.value)} placeholder="Подъезд" className="w-1/2 border-2 border-gray-100 p-4 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm text-center"/>
                 </div>
 
-                {restaurant?.payment_method === 'yookassa' ? (
-                  <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border-2 border-green-100 text-center">
-                    <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
-                    <p className="text-xs font-medium text-green-700">После оформления бот пришлет вам ссылку на безопасную оплату заказа.</p>
-                  </div>
-                ) : (
-                  <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border-2 border-dashed border-gray-200 mt-2">
-                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
-                    <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
-                      <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Не указано'}</span>
-                      <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black">КОПИРОВАТЬ</button>
+                {restaurant?.can_have_own_couriers && restaurant?.allow_cash_payment && (
+                    <div className="flex bg-gray-100 p-1 rounded-2xl mb-2">
+                        <button 
+                            onClick={() => setPaymentMode('online')} 
+                            className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'online' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
+                        >
+                            💳 Перевод
+                        </button>
+                        <button 
+                            onClick={() => setPaymentMode('cash')} 
+                            className={`flex-1 py-2 text-xs font-black uppercase rounded-xl transition-all ${paymentMode === 'cash' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
+                        >
+                            💵 При получении
+                        </button>
                     </div>
-                    <p className="text-xs font-bold text-gray-500">
-                      Переведите <span className="text-blue-600">{totalSumDiscounted + finalDeliveryPrice} ₽</span> и прикрепите чек:
-                    </p>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      onChange={(e) => setReceiptFile(e.target.files[0])}
-                      className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
-                    />
-                  </div>
+                )}
+
+                {paymentMode === 'cash' ? (
+                   <div className="bg-gray-50 p-5 rounded-3xl space-y-2 mt-2 border border-gray-200 text-center">
+                     <p className="text-sm font-black text-gray-800 uppercase tracking-wide">Оплата при получении</p>
+                     <p className="text-xs font-medium text-gray-500">Оплатите заказ наличными или переводом напрямую курьеру.</p>
+                   </div>
+                ) : (
+                    restaurant?.payment_method === 'yookassa' ? (
+                      <div className="bg-green-50 p-5 rounded-3xl space-y-2 mt-2 border border-green-100 text-center">
+                        <p className="text-sm font-black text-green-800 uppercase tracking-wide">Онлайн-оплата</p>
+                        <p className="text-xs font-medium text-green-700">После оформления бот пришлет вам ссылку на безопасную оплату заказа.</p>
+                      </div>
+                    ) : (
+                      <div className="bg-gray-50 p-5 rounded-3xl space-y-3 border border-dashed border-gray-300 mt-2">
+                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Реквизиты для оплаты</p>
+                        <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-gray-100">
+                          <span className="font-mono font-bold text-sm">{restaurant?.card_number || 'Не указано'}</span>
+                          <button onClick={() => {navigator.clipboard.writeText(restaurant?.card_number); alert("Скопировано!")}} className="text-blue-600 text-xs font-black bg-blue-50 px-2 py-1 rounded-md">КОПИРОВАТЬ</button>
+                        </div>
+                        <p className="text-xs font-bold text-gray-500">
+                          Переведите <span className="text-blue-600">{totalSumDiscounted + finalDeliveryPrice} ₽</span> и прикрепите чек:
+                        </p>
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={(e) => setReceiptFile(e.target.files[0])}
+                          className="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700"
+                        />
+                      </div>
+                    )
                 )}
 
                 <div className="bg-blue-50 p-5 rounded-3xl space-y-2 mt-2">
@@ -851,10 +892,10 @@ export default function RestaurantMenu() {
 
                 <button 
                   onClick={sendOrder} 
-                  disabled={!isAddressValid || phone.replace(/\D/g, '').length !== 11 || (!receiptFile && restaurant?.payment_method !== 'yookassa') || isUploading} 
-                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${isAddressValid && phone.replace(/\D/g, '').length === 11 && (receiptFile || restaurant?.payment_method === 'yookassa') && !isUploading ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  disabled={isSubmitDisabled} 
+                  className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-all mt-2 ${!isSubmitDisabled ? 'bg-green-500 text-white active:scale-95' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
                 >
-                  {isUploading ? 'ОБРАБОТКА...' : (restaurant?.payment_method === 'yookassa' ? 'ПЕРЕЙТИ К ОПЛАТЕ' : 'ПОДТВЕРДИТЬ')}
+                  {isUploading ? 'ОБРАБОТКА...' : (restaurant?.payment_method === 'yookassa' && paymentMode !== 'cash' ? 'ПЕРЕЙТИ К ОПЛАТЕ' : 'ПОДТВЕРДИТЬ')}
                 </button>
               </div>
             </div>
