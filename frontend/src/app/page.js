@@ -22,17 +22,19 @@ export default function Home() {
   const [selectedCity, setSelectedCity] = useState(null)
   const [availableCities, setAvailableCities] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
+  
+  // НОВОЕ: Глобальные теги
+  const [activeGlobalTag, setActiveGlobalTag] = useState('Все')
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false)
   const [myOrders, setMyOrders] = useState([])
 
   useEffect(() => {
-    // --- ПРОВЕРКА TELEGRAM И DEEP LINK ---
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
       if (!tg || !tg.initData) {
-        setIsTelegram(false); // Блокируем
-        window.location.href = BOT_APP_URL; // Авто-редирект в бота
+        setIsTelegram(false); 
+        window.location.href = BOT_APP_URL; 
         return;
       }
       
@@ -122,11 +124,19 @@ export default function Home() {
 
   const isSpecificCitySelected = selectedCity !== null && selectedCity !== '🌍 Все города' && selectedCity !== 'Все';
 
+  // СОБИРАЕМ ВСЕ ТЕГИ
+  const allTags = ['Все', ...new Set(restaurants.flatMap(r => r.tags ? r.tags.split(',').map(t => t.trim()) : []).filter(Boolean))]
+
   const processedRestaurants = restaurants
     .filter(r => {
       const matchCity = !isSpecificCitySelected || r.city === selectedCity;
       const matchSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchCity && matchSearch;
+      
+      // Фильтр по глобальному тегу
+      const resTags = r.tags ? r.tags.split(',').map(t => t.trim().toLowerCase()) : [];
+      const matchTag = activeGlobalTag === 'Все' || resTags.includes(activeGlobalTag.toLowerCase());
+
+      return matchCity && matchSearch && matchTag;
     })
     .sort((a, b) => {
       if (isSpecificCitySelected) {
@@ -174,7 +184,6 @@ export default function Home() {
     return <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider">{status}</span>;
   };
 
-  // ЗАГЛУШКА ДЛЯ БРАУЗЕРА С КНОПКОЙ
   if (!isTelegram) {
     return (
       <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
@@ -189,158 +198,196 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen p-4 bg-gray-50 text-black">
-      <div className="max-w-md mx-auto">
-        <div className="flex justify-between items-start mb-6 pt-6">
-          <div>
-            <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">LEKI</h1>
-            <div className="flex flex-col">
-               <span className="text-[10px] text-gray-400 uppercase font-black tracking-tighter">Ваш город:</span>
-               <select 
-                 value={selectedCity || ''} 
-                 onChange={(e) => selectCity(e.target.value)}
-                 className="bg-transparent font-black text-sm outline-none border-b-2 border-blue-200 cursor-pointer text-gray-700"
-               >
-                 {!selectedCity && <option value="">Выбрать...</option>}
-                 {availableCities.map(city => <option key={city} value={city}>{city}</option>)}
-               </select>
+    <main className="min-h-screen bg-gray-50 text-black">
+      <div className="px-4">
+        <div className="max-w-md mx-auto">
+          <div className="flex justify-between items-start mb-4 pt-6">
+            <div>
+              <h1 className="text-3xl font-black text-blue-600 leading-none mb-2">FAD</h1>
+              <div className="flex flex-col">
+                 <span className="text-[10px] text-gray-400 uppercase font-black tracking-tighter">Ваш город:</span>
+                 <select 
+                   value={selectedCity || ''} 
+                   onChange={(e) => selectCity(e.target.value)}
+                   className="bg-transparent font-black text-sm outline-none border-b-2 border-blue-200 cursor-pointer text-gray-700"
+                 >
+                   {!selectedCity && <option value="">Выбрать...</option>}
+                   {availableCities.map(city => <option key={city} value={city}>{city}</option>)}
+                 </select>
+              </div>
             </div>
+            <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all flex items-center gap-2">
+              <span>📜</span> Заказы
+            </button>
           </div>
-          <button onClick={openMyOrders} className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm active:scale-95 transition-all flex items-center gap-2">
-            <span>📜</span> Заказы
-          </button>
-        </div>
 
-        <div className="mb-6 relative">
-          <span className="absolute left-4 top-3.5 text-gray-400">🔍</span>
-          <input 
-            type="text" 
-            placeholder="Найти заведение..." 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-gray-200 p-3 pl-11 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm shadow-sm transition-all"
-          />
-        </div>
-
-        {!selectedCity && !isLoading && (
-          <div className="bg-blue-600 p-6 rounded-[24px] text-white mb-8 shadow-lg shadow-blue-100 animate-pulse">
-            <h2 className="text-xl font-black mb-1">Ассаламу Алейкум!</h2>
-            <p className="text-sm font-bold opacity-90">Укажите город сверху, чтобы увидеть меню ресторанов рядом с вами.</p>
+          <div className="mb-4 relative">
+            <span className="absolute left-4 top-3.5 text-gray-400">🔍</span>
+            <input 
+              type="text" 
+              placeholder="Найти заведение..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-white border border-gray-200 p-3 pl-11 rounded-2xl outline-none focus:border-blue-500 font-medium text-sm shadow-sm transition-all"
+            />
           </div>
-        )}
-        
-        <div className="space-y-4">
-          {isLoading ? (
-            <p className="text-center text-gray-400 font-bold mt-10">Загрузка заведений...</p>
-          ) : processedRestaurants.length > 0 ? (
-            processedRestaurants.map((restaurant) => {
-              const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
-              const canSelfDeliver = restaurant.can_self_deliver !== false;
-              const hasCouriers = restaurant.has_active_couriers !== false;
-              const isDeliverable = canSelfDeliver || hasCouriers;
-              const isFullyOpen = isOpenNow && isDeliverable;
-              
-              const showPin = isSpecificCitySelected && restaurant.is_pinned;
 
-              return (
-                <div key={restaurant.id} className={`p-6 bg-white rounded-[32px] shadow-sm border ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all flex flex-col ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <h2 className="text-xl font-black">{restaurant.name}</h2>
-                        {showPin && <span className="text-[10px] bg-gradient-to-r from-orange-400 to-red-500 text-white px-2 py-0.5 rounded-md font-black shadow-sm uppercase tracking-wider">🔥 Топ</span>}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
-                        <span className="text-xs font-bold text-yellow-500">⭐ {restaurant.rating}</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end">
-                      <span className="text-xs font-bold text-gray-400">📍 {restaurant.delivery_radius} км</span>
-                      {restaurant.working_hours && (
-                          <span className="text-[10px] font-bold text-gray-400 mt-1 bg-gray-50 px-2 py-1 rounded-md border border-gray-100">
-                              🕒 {restaurant.working_hours}
-                          </span>
-                      )}
-                    </div>
-                  </div>
+          {/* НОВОЕ: Лента тегов */}
+          {!isLoading && allTags.length > 1 && (
+            <div className="flex overflow-x-auto gap-2 mb-6 pb-2" style={{ scrollbarWidth: 'none' }}>
+              {allTags.map(tag => (
+                <button 
+                  key={tag} 
+                  onClick={() => setActiveGlobalTag(tag)} 
+                  className={`px-4 py-2 rounded-xl whitespace-nowrap font-bold text-sm transition-all ${activeGlobalTag === tag ? 'bg-blue-600 text-white shadow-md' : 'bg-white border border-gray-200 text-gray-600'}`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
 
-                  {restaurant.promotions?.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mb-4">
-                          {restaurant.promotions.map(p => {
-                              const isDiscount = p.reward_type === 'discount';
-                              const isFreeDelivery = p.reward_type === 'free_delivery';
-                              let text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
-                              if (isFreeDelivery) text = '🚚 БЕСПЛ. ДОСТАВКА';
-                              const minText = p.min_cart_total > 0 ? ` (от ${p.min_cart_total}₽)` : '';
-                              
-                              return (
-                                  <div key={p.id} className={`text-[10px] flex items-center px-2.5 py-1.5 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount || isFreeDelivery ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
-                                      <span className="font-black">{text}{minText}</span>
-                                      <span className="mx-1.5 opacity-40">|</span>
-                                      <span className="font-bold mr-1">КОД:</span>
-                                      <span className="font-black select-all cursor-pointer bg-white/60 px-1.5 py-0.5 rounded-md border border-white">{p.code}</span>
-                                  </div>
-                              )
-                          })}
-                      </div>
-                  )}
-                  
-                  <div className="mt-auto">
-                    {!isFullyOpen ? (
-                        <div className="w-full bg-red-50 text-red-600 font-black text-center py-4 rounded-2xl border-2 border-red-100">
-                          {!isOpenNow ? (restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО') : 'НЕТ СВОБОДНЫХ КУРЬЕРОВ'}
+          {!selectedCity && !isLoading && (
+            <div className="bg-blue-600 p-6 rounded-[24px] text-white mb-8 shadow-lg shadow-blue-100 animate-pulse">
+              <h2 className="text-xl font-black mb-1">Ассаламу Алейкум!</h2>
+              <p className="text-sm font-bold opacity-90">Укажите город сверху, чтобы увидеть рестораны рядом с вами.</p>
+            </div>
+          )}
+          
+          <div className="space-y-5 pb-32">
+            {isLoading ? (
+              <p className="text-center text-gray-400 font-bold mt-10">Загрузка заведений...</p>
+            ) : processedRestaurants.length > 0 ? (
+              processedRestaurants.map((restaurant) => {
+                const isOpenNow = restaurant.is_open && isRestaurantOpenByHours(restaurant.working_hours);
+                const canSelfDeliver = restaurant.can_self_deliver !== false;
+                const hasCouriers = restaurant.has_active_couriers !== false;
+                const isDeliverable = canSelfDeliver || hasCouriers;
+                const isFullyOpen = isOpenNow && isDeliverable;
+                
+                const showPin = isSpecificCitySelected && restaurant.is_pinned;
+
+                return (
+                  <div key={restaurant.id} className={`bg-white rounded-[32px] shadow-sm border overflow-hidden ${showPin ? 'border-orange-300 ring-4 ring-orange-50' : 'border-gray-100'} transition-all flex flex-col ${!isFullyOpen ? 'opacity-60 grayscale' : 'hover:shadow-md'}`}>
+                    
+                    {/* ОБЛОЖКА РЕСТОРАНА */}
+                    {restaurant.image_url && (
+                        <div className="relative h-36 bg-gray-100 w-full overflow-hidden">
+                            <img src={restaurant.image_url} alt={restaurant.name} className="w-full h-full object-cover" />
+                            {showPin && (
+                                <div className="absolute top-3 left-3 bg-gradient-to-r from-orange-400 to-red-500 text-white px-2.5 py-1 rounded-lg text-xs font-black shadow-md uppercase tracking-wider">
+                                    🔥 Топ
+                                </div>
+                            )}
                         </div>
-                    ) : (
-                      <Link href={`/restaurant/${restaurant.id}`} className="w-full">
-                        <button className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all shadow-lg shadow-blue-100 text-lg">
-                          Перейти к меню
-                        </button>
-                      </Link>
                     )}
+
+                    <div className="p-5">
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <h2 className="text-xl font-black">{restaurant.name}</h2>
+                              {showPin && !restaurant.image_url && <span className="text-[10px] bg-gradient-to-r from-orange-400 to-red-500 text-white px-2 py-0.5 rounded-md font-black shadow-sm uppercase tracking-wider">🔥 Топ</span>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-lg font-black uppercase">{restaurant.city}</span>
+                              <span className="text-xs font-bold text-yellow-500">⭐ {restaurant.rating}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end">
+                            <span className="text-xs font-bold text-gray-400">📍 {restaurant.delivery_radius} км</span>
+                            {restaurant.working_hours && (
+                                <span className="text-[10px] font-bold text-gray-400 mt-1 bg-gray-50 px-2 py-1 rounded-md border border-gray-100">
+                                    🕒 {restaurant.working_hours}
+                                </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* ТЕГИ */}
+                        {restaurant.tags && (
+                            <p className="text-xs font-bold text-gray-400 mb-4 line-clamp-1">{restaurant.tags.split(',').join(' • ')}</p>
+                        )}
+
+                        {restaurant.promotions?.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                {restaurant.promotions.map(p => {
+                                    const isDiscount = p.reward_type === 'discount';
+                                    const isFreeDelivery = p.reward_type === 'free_delivery';
+                                    let text = isDiscount ? `🎟 -${p.discount_rub}₽` : `🎁 ${p.gift_name}`;
+                                    if (isFreeDelivery) text = '🚚 БЕСПЛ. ДОСТАВКА';
+                                    const minText = p.min_cart_total > 0 ? ` (от ${p.min_cart_total}₽)` : '';
+                                    
+                                    return (
+                                        <div key={p.id} className={`text-[10px] flex items-center px-2.5 py-1.5 rounded-xl shadow-sm uppercase tracking-wider ${isDiscount || isFreeDelivery ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-purple-50 text-purple-600 border border-purple-200'}`}>
+                                            <span className="font-black">{text}{minText}</span>
+                                            <span className="mx-1.5 opacity-40">|</span>
+                                            <span className="font-bold mr-1">КОД:</span>
+                                            <span className="font-black select-all cursor-pointer bg-white/60 px-1.5 py-0.5 rounded-md border border-white">{p.code}</span>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        )}
+                        
+                        <div className="mt-2">
+                          {!isFullyOpen ? (
+                              <div className="w-full bg-red-50 text-red-600 font-black text-center py-3.5 rounded-2xl border border-red-100 text-sm">
+                                {!isOpenNow ? (restaurant.is_open ? 'СЕЙЧАС ЗАКРЫТО' : 'ВРЕМЕННО ЗАКРЫТО') : 'НЕТ СВОБОДНЫХ КУРЬЕРОВ'}
+                              </div>
+                          ) : (
+                            <Link href={`/restaurant/${restaurant.id}`} className="w-full">
+                              <button className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-2xl active:scale-95 transition-all shadow-md shadow-blue-100 text-md">
+                                Перейти к меню
+                              </button>
+                            </Link>
+                          )}
+                        </div>
+                    </div>
                   </div>
+                )
+              })
+            ) : (
+              <div className="text-center py-10">
+                 <p className="text-gray-400 font-bold">Ничего не найдено.</p>
+                 {selectedCity !== '🌍 Все города' && selectedCity !== 'Все' && (
+                   <button onClick={() => selectCity('🌍 Все города')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
+                 )}
+              </div>
+            )}
+          </div>
+
+          {/* МОДАЛКА ИСТОРИИ ЗАКАЗОВ */}
+          {isOrdersOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
+              <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col shadow-2xl">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-black">Мои заказы</h2>
+                  <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 text-gray-400 w-10 h-10 rounded-full flex items-center justify-center font-bold">✕</button>
                 </div>
-              )
-            })
-          ) : (
-            <div className="text-center py-10">
-               <p className="text-gray-400 font-bold">Ничего не найдено.</p>
-               {selectedCity !== '🌍 Все города' && selectedCity !== 'Все' && (
-                 <button onClick={() => selectCity('🌍 Все города')} className="text-blue-500 font-bold mt-2 text-sm underline">Показать все города</button>
-               )}
+                <div className="overflow-y-auto space-y-4 pr-2 pb-6">
+                  {myOrders.length === 0 ? (
+                    <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
+                  ) : (
+                    myOrders.map(o => {
+                      const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
+                      return (
+                        <div key={o.id} className="border-2 border-gray-50 rounded-3xl p-5 shadow-sm bg-white">
+                          <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
+                          <p className="text-sm font-bold text-gray-800 mb-4 bg-gray-50 p-2 rounded-xl inline-block">🏠 {o.restaurant_name}</p>
+                          <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-gray-100 pl-3">
+                            {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
+                          </div>
+                          <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
-
-        {isOrdersOpen && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end">
-            <div className="bg-white rounded-t-[40px] p-6 max-w-md mx-auto w-full animate-slide-up pb-10 max-h-[85vh] flex flex-col shadow-2xl">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-black">Мои заказы</h2>
-                <button onClick={() => setIsOrdersOpen(false)} className="bg-gray-100 text-gray-400 w-10 h-10 rounded-full flex items-center justify-center font-bold">✕</button>
-              </div>
-              <div className="overflow-y-auto space-y-4 pr-2 pb-6">
-                {myOrders.length === 0 ? (
-                  <div className="text-center py-10"><span className="text-5xl block mb-4">🛒</span><p className="text-gray-400 font-bold">Вы еще ничего не заказывали</p></div>
-                ) : (
-                  myOrders.map(o => {
-                    const itemsList = typeof o.items === 'string' ? JSON.parse(o.items) : o.items;
-                    return (
-                      <div key={o.id} className="border-2 border-gray-50 rounded-3xl p-5 shadow-sm bg-white">
-                        <div className="flex justify-between items-center mb-4"><span className="font-black text-xl">Заказ #{o.id}</span>{getStatusBadge(o.status)}</div>
-                        <p className="text-sm font-bold text-gray-800 mb-4 bg-gray-50 p-2 rounded-xl inline-block">🏠 {o.restaurant_name}</p>
-                        <div className="text-sm text-gray-500 mb-5 space-y-2 border-l-2 border-gray-100 pl-3">
-                          {itemsList.map((item, idx) => (<div key={idx} className="flex justify-between items-center"><span className="font-medium">{item.name}</span><span className="font-black text-gray-400">x{item.count}</span></div>))}
-                        </div>
-                        <div className="border-t-2 border-dashed border-gray-100 pt-4 flex justify-between items-center font-black"><span className="text-gray-400">Итого:</span><span className="text-blue-600 text-xl">{o.total_price} ₽</span></div>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </main>
   )
