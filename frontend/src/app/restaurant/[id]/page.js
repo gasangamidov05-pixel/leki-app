@@ -9,8 +9,8 @@ import Script from 'next/script'
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
 
-// ❗️❗️❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
-const BOT_APP_URL = "https://t.me/Probnayaaa_bot/app"
+// ❗️ ВПИШИ СЮДА ССЫЛКУ НА СВОЕ МИНИ-ПРИЛОЖЕНИЕ ТЕЛЕГРАМ
+const BOT_APP_URL = "https://t.me/ТВОЙ_БОТ/app"
 
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -103,6 +103,7 @@ export default function RestaurantMenu() {
   const [closedReason, setClosedReason] = useState('')
 
   useEffect(() => {
+    // ВЕРНУЛИ СТАРУЮ НАДЕЖНУЮ ПРОВЕРКУ
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
       if (!tg || !tg.initData) {
@@ -111,7 +112,7 @@ export default function RestaurantMenu() {
         setDeepLinkUrl(specificUrl);
         window.location.href = specificUrl; 
       }
-    }, 1500);
+    }, 500);
 
     const savedPhone = localStorage.getItem('leki_phone');
     const savedApt = localStorage.getItem('leki_apt');
@@ -147,7 +148,7 @@ export default function RestaurantMenu() {
               reason = `СЕЙЧАС ЗАКРЫТО (Часы работы: ${res.working_hours || 'Не указаны'})`;
           } else if (res.can_self_deliver === false && res.has_active_couriers === false) {
               allowed = false;
-              reason = 'В ДАННЫЙ МОМЕНТ НЕТ СВОБОДНЫХ НИ КУРЬЕРОВ';
+              reason = 'В ДАННЫЙ МОМЕНТ НЕТ СВОБОДНЫХ КУРЬЕРОВ';
           }
 
           setIsOrderingAllowed(allowed);
@@ -529,8 +530,6 @@ export default function RestaurantMenu() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-black pb-32">
-      {/* ❗️ ВОТ ЭТОТ СКРИПТ Я ЗАБЫЛ В ПРОШЛЫЙ РАЗ ❗️ */}
-      <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
       <Script src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`} strategy="afterInteractive" onLoad={() => setIsMapApiLoaded(true)} />
 
       {restaurant?.image_url ? (
