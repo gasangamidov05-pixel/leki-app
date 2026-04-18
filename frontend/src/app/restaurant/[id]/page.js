@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import Script from 'next/script' // ❗️ ДОБАВИЛИ ИМПОРТ СКРИПТА
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 const YANDEX_API_KEY = "b9336a86-41c5-4a5a-a3b1-9a1ef4057197";
@@ -102,7 +103,6 @@ export default function RestaurantMenu() {
   const [closedReason, setClosedReason] = useState('')
 
   useEffect(() => {
-    // ВЕРНУЛИ СТАРУЮ НАДЕЖНУЮ ПРОВЕРКУ
     const timer = setTimeout(() => {
       const tg = window.Telegram?.WebApp;
       if (!tg || !tg.initData) {
@@ -529,6 +529,14 @@ export default function RestaurantMenu() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-black pb-32">
+      
+      {/* ❗️ ВОТ ЭТОТ БЛОК ОТВЕЧАЕТ ЗА ЗАГРУЗКУ КАРТ */}
+      <Script 
+        src={`https://api-maps.yandex.ru/2.1/?apikey=${YANDEX_API_KEY}&lang=ru_RU`}
+        strategy="afterInteractive"
+        onLoad={() => setIsMapApiLoaded(true)}
+      />
+
       <div className="px-4">
         {restaurant?.image_url ? (
           <div className="h-48 relative w-full bg-gray-200">
